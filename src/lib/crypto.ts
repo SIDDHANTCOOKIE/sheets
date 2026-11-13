@@ -9,6 +9,8 @@ import {
 import { bytesToHex, hexToBytes } from "nostr-tools/utils";
 import { KIND_SHEET, CLIENT_TAG } from "./constants";
 import type { SheetDocument } from "./types";
+import { normalizeWorkbook } from "./workbook";
+import { ROOT_VERSION, buildRootV2, isSheetRootV2, parseRootV2, serializeRoot } from "./v2/root";
 
 export interface DocKeys {
   viewKey: string;
@@ -39,14 +41,20 @@ export function decryptWithSecret(ciphertext: string, secretHex: string): string
   return nip44.v2.decrypt(ciphertext, conversationKeyForSecret(secretHex));
 }
 
-export function buildSheetEvent(params: {
+/**
+ * Builds the sheet event. New events are v2 roots (compressed, inline storage),
+ * so sheets far larger than the 64 KB NIP-44 limit as plain JSON can be saved.
+ * Throws SheetTooLargeError when even the compressed root does not fit.
+ */
+export async function buildSheetEvent(params: {
   sheetId: string;
   document: SheetDocument;
   viewKey: string;
   editKey: string;
   createdAt?: number;
-}): Event {
+}): Promise<Event> {
   const createdAt = params.createdAt ?? Math.floor(Date.now() / 1000);
+  const root = serializeRoot(await buildRootV2(params.document));
   const template: EventTemplate = {
     kind: KIND_SHEET,
     created_at: createdAt,
@@ -55,10 +63,29 @@ export function buildSheetEvent(params: {
       ["t", "formstr-sheet"],
       ["client", CLIENT_TAG],
       ["encrypted", "nip44"],
+      ["v", String(ROOT_VERSION)],
+      ["storage", "inline"],
     ],
-    content: encryptWithSecret(JSON.stringify(params.document), params.viewKey),
+    content: encryptWithSecret(root, params.viewKey),
   };
   return finalizeEvent(template, hexToBytes(params.editKey));
+}
+
+/**
+ * Reads a sheet event of any version. v2 roots are expanded; anything else is
+ * treated as a v1 event, whose content is the workbook JSON itself (including
+ * the older fortune-sheet format that normalizeWorkbook still understands).
+ */
+export async function decodeSheetEvent(
+  event: Pick<Event, "content">,
+  viewKey: string,
+  fallbackTitle?: string,
+): Promise<SheetDocument> {
+  const parsed: unknown = JSON.parse(decryptWithSecret(event.content, viewKey));
+  if (isSheetRootV2(parsed)) {
+    return normalizeWorkbook(await parseRootV2(parsed), fallbackTitle);
+  }
+  return normalizeWorkbook(parsed, fallbackTitle);
 }
 
 export function buildSheetDeletionEvent(params: {

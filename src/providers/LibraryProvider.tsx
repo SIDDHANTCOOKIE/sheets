@@ -20,7 +20,7 @@ import {
 import {
   buildSheetDeletionEvent,
   buildSheetEvent,
-  decryptWithSecret,
+  decodeSheetEvent,
   generateDocKeys,
 } from "../lib/crypto";
 import {
@@ -32,10 +32,7 @@ import {
   publishEvent,
   subscribeSheet,
 } from "../lib/nostr";
-import {
-  createWorkbookFromFortune,
-  normalizeWorkbook,
-} from "../lib/workbook";
+import { createWorkbookFromFortune } from "../lib/workbook";
 import { templateById } from "../lib/templates";
 import {
   loadDocCache,
@@ -448,7 +445,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         createdAt: now,
         updatedAt: now,
       };
-      const event = buildSheetEvent({
+      const event = await buildSheetEvent({
         sheetId: id,
         document: finalDocument,
         viewKey: keys.viewKey,
@@ -616,10 +613,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         }
         let remoteDocument: SheetDocument;
         try {
-          remoteDocument = normalizeWorkbook(
-            JSON.parse(decryptWithSecret(event.content, entry.viewKey)),
-            entry.title,
-          );
+          remoteDocument = await decodeSheetEvent(event, entry.viewKey, entry.title);
         } catch {
           throw new Error("Couldn't decrypt this sheet. The access keys may have changed.");
         }
@@ -670,10 +664,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       );
       if (!event) return null;
       try {
-        const doc = normalizeWorkbook(
-          JSON.parse(decryptWithSecret(event.content, entry.viewKey)),
-          entry.title,
-        );
+        const doc = await decodeSheetEvent(event, entry.viewKey, entry.title);
         return { doc, event };
       } catch {
         throw new Error("Couldn't decrypt the latest version. The access keys may have changed.");
@@ -691,7 +682,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         Math.floor(now / 1000),
         Math.floor((entry.lastEventAt ?? 0) / 1000) + 1,
       );
-      const event = buildSheetEvent({
+      const event = await buildSheetEvent({
         sheetId: entry.id,
         document: nextDocument,
         viewKey: entry.viewKey,
