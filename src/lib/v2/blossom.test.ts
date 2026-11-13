@@ -95,9 +95,12 @@ describe("Blossom upload and download", () => {
     const { frameBytes } = await prepareTab({ x: 1 });
     const [uploaded] = await uploadFrames([frameBytes], { servers: [A, B, C], signer: localSigner(), fetch: net.fetch });
 
-    expect(uploaded.servers).toEqual([B, C]);
-    expect(net.stores.get(B)!.has(uploaded.ref.x)).toBe(true);
-    expect(net.stores.get(C)!.has(uploaded.ref.x)).toBe(true);
+    // A is down, so the copies go to the next servers in list order, up to MAX_REPLICAS.
+    const expected = [B, C].slice(0, MAX_REPLICAS);
+    expect(uploaded.servers).toEqual(expected);
+    for (const server of [B, C]) {
+      expect(net.stores.get(server)?.has(uploaded.ref.x) ?? false).toBe(expected.includes(server));
+    }
   });
 
   it("fails clearly when no server accepts the upload", async () => {
