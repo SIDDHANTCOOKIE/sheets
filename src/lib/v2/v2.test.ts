@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { base64ToBytes, bytesToBase64, frame, unframe } from "./codec";
 import {
-  INLINE_MAX_BYTES,
+  ROOT_MAX_BYTES,
   SheetTooLargeError,
-  buildRootV2,
+  buildInlineRoot,
   isSheetRootV2,
   parseRootV2,
   serializeRoot,
@@ -49,6 +49,12 @@ describe("FSB2 codec", () => {
     expect(bytes.length).toBeLessThan(JSON.stringify(value).length / 10);
   });
 
+  it("produces identical bytes for equal content built in a different key order", async () => {
+    const a = { id: "t", cells: { "0:0": { value: 1, type: "number" }, "0:1": { type: "text", value: "x" } } };
+    const b = { cells: { "0:1": { value: "x", type: "text" }, "0:0": { type: "number", value: 1 } }, id: "t" };
+    expect(Array.from(await frame(a))).toEqual(Array.from(await frame(b)));
+  });
+
   it("rejects data that is not FSB2", async () => {
     await expect(unframe(new Uint8Array([1, 2, 3, 4, 5, 6, 7]))).rejects.toThrow("Not an FSB2 payload");
   });
@@ -74,7 +80,7 @@ describe("v2 root", () => {
     doc.sheets[0].frozen = { rows: 1, columns: 0 };
     doc.sheets.push({ ...doc.sheets[0], id: "tab2", name: "Second", order: 1, color: "#10B981", cells: { "3:3": { value: "hi" } } });
 
-    const root = await buildRootV2(doc);
+    const root = await buildInlineRoot(doc);
     expect(isSheetRootV2(root)).toBe(true);
     expect(root.tabs).toHaveLength(2);
     const restored = normalizeWorkbook(await parseRootV2(JSON.parse(serializeRoot(root))));
@@ -91,17 +97,17 @@ describe("v2 root", () => {
 
   it("stores a sheet whose plain JSON is several times over the inline limit", async () => {
     const doc = workbookWithRows(400, 10);
-    expect(JSON.stringify(doc).length).toBeGreaterThan(INLINE_MAX_BYTES * 4);
+    expect(JSON.stringify(doc).length).toBeGreaterThan(ROOT_MAX_BYTES * 4);
 
-    const json = serializeRoot(await buildRootV2(doc));
-    expect(new TextEncoder().encode(json).length).toBeLessThan(INLINE_MAX_BYTES);
+    const json = serializeRoot(await buildInlineRoot(doc));
+    expect(new TextEncoder().encode(json).length).toBeLessThan(ROOT_MAX_BYTES);
     const restored = await parseRootV2(JSON.parse(json));
     expect(restored.sheets[0].cells["399:9"]).toEqual(doc.sheets[0].cells["399:9"]);
     expect(Object.keys(restored.sheets[0].cells)).toHaveLength(4000);
   });
 
   it("refuses a sheet that cannot fit even when compressed", async () => {
-    const root = await buildRootV2(noisyWorkbook(20_000));
+    const root = await buildInlineRoot(noisyWorkbook(20_000));
     expect(() => serializeRoot(root)).toThrow(SheetTooLargeError);
   });
 });

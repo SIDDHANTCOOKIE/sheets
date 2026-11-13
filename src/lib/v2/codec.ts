@@ -29,8 +29,23 @@ export function inflate(bytes: Uint8Array): Promise<Uint8Array> {
   return pipe(bytes, new DecompressionStream("deflate-raw"));
 }
 
+/**
+ * JSON with object keys sorted, so equal content always produces equal bytes
+ * regardless of the order properties were inserted in. The frame's hash is how we
+ * tell an unchanged tab from a changed one, so it must follow content, not key order.
+ */
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item: unknown) => {
+    if (item && typeof item === "object" && !Array.isArray(item)) {
+      const source = item as Record<string, unknown>;
+      return Object.fromEntries(Object.keys(source).sort().map((key) => [key, source[key]]));
+    }
+    return item;
+  });
+}
+
 export async function frame(json: unknown, type = FSB2_TYPE_CHUNK): Promise<Uint8Array> {
-  const body = await deflate(new TextEncoder().encode(JSON.stringify(json)));
+  const body = await deflate(new TextEncoder().encode(canonicalJson(json)));
   const out = new Uint8Array(FSB2_HEADER_BYTES + body.length);
   out.set(FSB2_MAGIC, 0);
   out[4] = type;

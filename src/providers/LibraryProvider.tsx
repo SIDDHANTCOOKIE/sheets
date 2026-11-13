@@ -22,9 +22,11 @@ import {
   buildSheetEvent,
   decodeSheetEvent,
   generateDocKeys,
+  type ReuseEntry,
 } from "../lib/crypto";
 import {
   coordinateFor,
+  fetchBlossomServers,
   fetchEvents,
   fetchLatestEvent,
   fetchUserRelays,
@@ -33,6 +35,7 @@ import {
   subscribeSheet,
 } from "../lib/nostr";
 import { createWorkbookFromFortune } from "../lib/workbook";
+import { BlobUnavailableError, SheetTooLargeError } from "../lib/v2/root";
 import { templateById } from "../lib/templates";
 import {
   loadDocCache,
@@ -298,6 +301,53 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
 
   const lastMetaAtRef = useRef(new Map<string, number>());
 
+  // Blossom: the user's server list (kind 10063), warmed after sign-in, and a per-sheet
+  // memory of blobs already uploaded so a save only sends the tabs that changed.
+  const serversRef = useRef<string[]>([]);
+  const reuseRef = useRef(new Map<string, Map<string, ReuseEntry>>());
+
+  const reuseFor = useCallback((coordinate: string) => {
+    let map = reuseRef.current.get(coordinate);
+    if (!map) {
+      map = new Map();
+      reuseRef.current.set(coordinate, map);
+    }
+    return map;
+  }, []);
+
+  const fetchServers = useCallback(async () => {
+    if (!pubkey) return [];
+    const list = await fetchBlossomServers(relays, pubkey).catch(() => []);
+    serversRef.current = list;
+    return list;
+  }, [pubkey, relays]);
+
+  useEffect(() => {
+    serversRef.current = [];
+    void fetchServers();
+  }, [fetchServers]);
+
+  // Builds the sheet event. If the sheet is too big to store inline and we have not seen any
+  // Blossom servers, look the list up again once (it may have been added since sign-in).
+  const buildEvent = useCallback(
+    async (coordinate: string, params: Omit<Parameters<typeof buildSheetEvent>[0], "blossom">) => {
+      const attempt = (servers: string[]) =>
+        buildSheetEvent({
+          ...params,
+          blossom: { servers, signer: signer ?? undefined, reuse: reuseFor(coordinate) },
+        });
+      try {
+        return await attempt(serversRef.current);
+      } catch (error) {
+        if (!(error instanceof SheetTooLargeError)) throw error;
+        const servers = await fetchServers();
+        if (servers.length === 0) throw error;
+        return attempt(servers);
+      }
+    },
+    [fetchServers, reuseFor, signer],
+  );
+
   const persistEntry = useCallback(
     async (entry: LibraryEntry, deleted = false) => {
       if (!signer || !pubkey || entry.source === "grant") return;
@@ -445,7 +495,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         createdAt: now,
         updatedAt: now,
       };
-      const event = await buildSheetEvent({
+      const event = await buildEvent(coordinateFor(keys.editPubkey, id), {
         sheetId: id,
         document: finalDocument,
         viewKey: keys.viewKey,
@@ -490,7 +540,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       });
       return entry;
     },
-    [persistEntry, profileFor, pubkey, relays, replaceEntries, signer],
+    [buildEvent, persistEntry, profileFor, pubkey, relays, replaceEntries, signer],
   );
 
   const createSheet = useCallback(
@@ -613,8 +663,12 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         }
         let remoteDocument: SheetDocument;
         try {
-          remoteDocument = await decodeSheetEvent(event, entry.viewKey, entry.title);
-        } catch {
+          remoteDocument = await decodeSheetEvent(event, entry.viewKey, entry.title, {
+            servers: serversRef.current,
+            reuse: reuseFor(entry.coordinate),
+          });
+        } catch (error) {
+          if (error instanceof BlobUnavailableError) throw error;
           throw new Error("Couldn't decrypt this sheet. The access keys may have changed.");
         }
         if (entry.title !== remoteDocument.title) {
@@ -652,7 +706,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       }
       throw new Error("This sheet has no saved data yet.");
     },
-    [relays, replaceEntries],
+    [relays, replaceEntries, reuseFor],
   );
 
   const fetchRemoteDocument = useCallback(
@@ -664,13 +718,17 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       );
       if (!event) return null;
       try {
-        const doc = await decodeSheetEvent(event, entry.viewKey, entry.title);
+        const doc = await decodeSheetEvent(event, entry.viewKey, entry.title, {
+          servers: serversRef.current,
+          reuse: reuseFor(entry.coordinate),
+        });
         return { doc, event };
-      } catch {
+      } catch (error) {
+        if (error instanceof BlobUnavailableError) throw error;
         throw new Error("Couldn't decrypt the latest version. The access keys may have changed.");
       }
     },
-    [relays],
+    [relays, reuseFor],
   );
 
   const saveDocument = useCallback(
@@ -682,7 +740,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         Math.floor(now / 1000),
         Math.floor((entry.lastEventAt ?? 0) / 1000) + 1,
       );
-      const event = await buildSheetEvent({
+      const event = await buildEvent(entry.coordinate, {
         sheetId: entry.id,
         document: nextDocument,
         viewKey: entry.viewKey,
@@ -727,7 +785,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         throw err;
       }
     },
-    [relays, replaceEntries],
+    [buildEvent, relays, replaceEntries],
   );
 
   const updateTitle = useCallback(

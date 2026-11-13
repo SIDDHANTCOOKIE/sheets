@@ -6,6 +6,8 @@ export const KIND_SHEET = 33460;
 export const KIND_SHEET_GRANT = 33461;
 export const KIND_SHEET_META = 33462;
 export const KIND_SHEET_INDEX = KIND_SHEET_META;
+/** BUD-03: a user's list of Blossom servers, as `server` tags. */
+export const KIND_BLOSSOM_SERVERS = 10063;
 
 export const DEFAULT_RELAYS = [
   "wss://relay.formstr.app",
