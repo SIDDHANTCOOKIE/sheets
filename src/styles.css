@@ -3521,3 +3521,31 @@ pre {
   font-size: 12px;
   line-height: 1.5;
 }
+
+/* ---------- File info dialog ---------- */
+
+.info-grid {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 10px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.info-grid dt {
+  color: var(--muted);
+}
+
+.info-grid dd {
+  margin: 0;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.info-grid dd small,
+.server-list small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}

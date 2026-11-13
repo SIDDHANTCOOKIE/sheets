@@ -14,6 +14,7 @@ import {
   FileDown,
   FileSpreadsheet,
   HardDrive,
+  Info,
   KeyRound,
   Loader2,
   LockKeyhole,
@@ -31,6 +32,7 @@ import { LogoMark } from "./Logo";
 import { PersonDialog, TagDialog, type PersonChoice } from "./CellMetaDialogs";
 import { ShareDialog } from "./ShareDialog";
 import { StorageServersDialog } from "./StorageServersDialog";
+import { FileInfoDialog } from "./FileInfoDialog";
 import { useAuth } from "../providers/AuthProvider";
 import { useLibrary } from "../providers/LibraryProvider";
 import { useProfiles } from "../providers/ProfileProvider";
@@ -197,6 +199,7 @@ export function Editor() {
   const [tagOpen, setTagOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [storageOpen, setStorageOpen] = useState(false);
+  const [infoDoc, setInfoDoc] = useState<SheetDocument | null>(null);
   const [deleting, setDeleting] = useState(false);
   const selectionRef = useRef<SelectionRange[]>([]);
 
@@ -935,6 +938,16 @@ export function Editor() {
                 )}
                 <MenuSeparator />
                 <MenuItem
+                  icon={<Info size={15} />}
+                  label="File info"
+                  onClick={() => {
+                    close();
+                    const currentDoc = documentRef.current;
+                    // Measure what is open right now, including unsaved edits.
+                    if (currentDoc) setInfoDoc(buildCurrentWorkbook(currentDoc, Date.now()));
+                  }}
+                />
+                <MenuItem
                   icon={<HardDrive size={15} />}
                   label="Storage servers"
                   onClick={() => {
@@ -1097,6 +1110,12 @@ export function Editor() {
       </Dialog>
 
       <StorageServersDialog open={storageOpen} onClose={() => setStorageOpen(false)} />
+      <FileInfoDialog
+        open={infoDoc !== null}
+        onClose={() => setInfoDoc(null)}
+        doc={infoDoc}
+        lastSavedAt={lastSavedAt}
+      />
     </div>
   );
 }
