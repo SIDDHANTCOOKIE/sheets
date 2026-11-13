@@ -7,6 +7,7 @@ import {
   FileSpreadsheet,
   Grid2X2,
   HardDrive,
+  Info,
   KeyRound,
   Loader2,
   LockKeyhole,
@@ -26,6 +27,7 @@ import { Menu, MenuItem, MenuSeparator } from "./Menu";
 import { Dialog } from "./Dialog";
 import { NewSheetDialog } from "./NewSheetDialog";
 import { StorageServersDialog } from "./StorageServersDialog";
+import { FileInfoDialog } from "./FileInfoDialog";
 import { useAuth } from "../providers/AuthProvider";
 import { useLibrary } from "../providers/LibraryProvider";
 import { useProfiles } from "../providers/ProfileProvider";
@@ -33,7 +35,7 @@ import { useToast } from "../providers/ToastProvider";
 import { getTheme, setTheme } from "../lib/local";
 import { downloadText, formatRelativeTime, shortNpub } from "../lib/utils";
 import { sheetPath } from "../lib/routes";
-import type { LibraryEntry } from "../lib/types";
+import type { LibraryEntry, SheetDocument } from "../lib/types";
 
 type Filter = "all" | "owned" | "shared";
 type Sort = "recent" | "name";
@@ -77,6 +79,7 @@ export function Dashboard() {
   const [search, setSearch] = useState("");
   const [newOpen, setNewOpen] = useState(false);
   const [storageOpen, setStorageOpen] = useState(false);
+  const [info, setInfo] = useState<{ doc: SheetDocument; savedAt: number } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<LibraryEntry | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [theme, setThemeState] = useState<"light" | "dark">(getTheme);
@@ -128,6 +131,17 @@ export function Dashboard() {
 
   const openEntry = (entry: LibraryEntry) => {
     navigate(sheetPath(entry));
+  };
+
+  // Loads the sheet's latest version (from this device or the network) so it can be measured.
+  const showFileInfo = async (entry: LibraryEntry) => {
+    toast("Loading file info…", "info");
+    try {
+      const loaded = await library.loadDocument(entry);
+      setInfo({ doc: loaded.doc, savedAt: loaded.doc.updatedAt });
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Couldn't load this sheet.", "error");
+    }
   };
 
   const copyLink = async (entry: LibraryEntry, mode: "view" | "edit") => {
@@ -493,6 +507,14 @@ export function Dashboard() {
                                   }}
                                 />
                               )}
+                              <MenuItem
+                                icon={<Info size={15} />}
+                                label="File info"
+                                onClick={() => {
+                                  close();
+                                  void showFileInfo(entry);
+                                }}
+                              />
                               <MenuSeparator />
                               <MenuItem
                                 icon={<Trash2 size={15} />}
@@ -541,6 +563,12 @@ export function Dashboard() {
 
       <NewSheetDialog open={newOpen} onClose={() => setNewOpen(false)} />
       <StorageServersDialog open={storageOpen} onClose={() => setStorageOpen(false)} />
+      <FileInfoDialog
+        open={info !== null}
+        onClose={() => setInfo(null)}
+        doc={info?.doc ?? null}
+        lastSavedAt={info?.savedAt}
+      />
 
       <Dialog
         open={!!deleteTarget}
