@@ -740,13 +740,26 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
         Math.floor(now / 1000),
         Math.floor((entry.lastEventAt ?? 0) / 1000) + 1,
       );
-      const event = await buildEvent(entry.coordinate, {
-        sheetId: entry.id,
-        document: nextDocument,
-        viewKey: entry.viewKey,
-        editKey: entry.editKey,
-        createdAt,
-      });
+      // Keep the device copy first: building the event may upload to Blossom, and if that
+      // fails the edits must survive a reload and be retried, like a failed relay publish.
+      saveDocCache(entry, nextDocument, { savedAt: now, pending: true });
+      let event: Event;
+      try {
+        event = await buildEvent(entry.coordinate, {
+          sheetId: entry.id,
+          document: nextDocument,
+          viewKey: entry.viewKey,
+          editKey: entry.editKey,
+          createdAt,
+        });
+      } catch (err) {
+        replaceEntries(
+          entriesRef.current.map((item) =>
+            item.coordinate === entry.coordinate ? { ...item, title: nextDocument.title, updatedAt: now } : item,
+          ),
+        );
+        throw err;
+      }
 
       try {
         const result = await publishEvent(event, relays);
