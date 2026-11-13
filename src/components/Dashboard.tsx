@@ -6,6 +6,7 @@ import {
   Download,
   FileSpreadsheet,
   Grid2X2,
+  HardDrive,
   KeyRound,
   Loader2,
   LockKeyhole,
@@ -24,6 +25,7 @@ import { Avatar } from "./Avatar";
 import { Menu, MenuItem, MenuSeparator } from "./Menu";
 import { Dialog } from "./Dialog";
 import { NewSheetDialog } from "./NewSheetDialog";
+import { StorageServersDialog } from "./StorageServersDialog";
 import { useAuth } from "../providers/AuthProvider";
 import { useLibrary } from "../providers/LibraryProvider";
 import { useProfiles } from "../providers/ProfileProvider";
@@ -74,6 +76,7 @@ export function Dashboard() {
   const [sort, setSort] = useState<Sort>("recent");
   const [search, setSearch] = useState("");
   const [newOpen, setNewOpen] = useState(false);
+  const [storageOpen, setStorageOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<LibraryEntry | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [theme, setThemeState] = useState<"light" | "dark">(getTheme);
@@ -281,6 +284,14 @@ export function Dashboard() {
                   label="Refresh library"
                   onClick={() => {
                     void library.refresh();
+                    close();
+                  }}
+                />
+                <MenuItem
+                  icon={<HardDrive size={15} />}
+                  label="Storage servers"
+                  onClick={() => {
+                    setStorageOpen(true);
                     close();
                   }}
                 />
@@ -529,6 +540,7 @@ export function Dashboard() {
       </main>
 
       <NewSheetDialog open={newOpen} onClose={() => setNewOpen(false)} />
+      <StorageServersDialog open={storageOpen} onClose={() => setStorageOpen(false)} />
 
       <Dialog
         open={!!deleteTarget}

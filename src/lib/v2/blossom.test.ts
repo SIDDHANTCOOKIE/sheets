@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { verifyEvent, type Event } from "nostr-tools";
-import { MAX_REPLICAS, downloadTabBody, prepareTab, sanitizeServers, uploadFrames } from "./blossom";
+import { MAX_REPLICAS, downloadTabBody, mergeServers, prepareTab, sanitizeServers, uploadFrames } from "./blossom";
 import { BlobUnavailableError } from "./root";
 import { fakeBlossom, localSigner } from "./testUtils";
 
@@ -26,6 +26,29 @@ describe("sanitizeServers", () => {
         "ftp://c.example",
       ]),
     ).toEqual(["https://a.example", "http://localhost:3000"]);
+  });
+});
+
+describe("mergeServers", () => {
+  it("adds new servers and keeps the ones already on the profile", () => {
+    expect(mergeServers([A], [B], [])).toEqual([A, B]);
+  });
+
+  it("removes only what the user removed", () => {
+    expect(mergeServers([A, B, C], [], [B])).toEqual([A, C]);
+  });
+
+  it("keeps a server added elsewhere that this editor never saw", () => {
+    // The dialog showed [A] and the user removed A, but the profile now also has C.
+    expect(mergeServers([A, C], [B], [A])).toEqual([C, B]);
+  });
+
+  it("does not wipe the list when the read came back empty", () => {
+    expect(mergeServers([], [B], [])).toEqual([B]);
+  });
+
+  it("ignores duplicates, trailing slashes and non-https addresses", () => {
+    expect(mergeServers([`${A}/`], [A, "http://evil.example", B], [])).toEqual([A, B]);
   });
 });
 

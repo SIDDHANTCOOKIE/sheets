@@ -47,6 +47,16 @@ export function sanitizeServers(servers: readonly string[]): string[] {
   return out;
 }
 
+/**
+ * The list to publish: what is already on the profile, minus what the user removed,
+ * plus what they added. Starting from the current list means a server added in another
+ * app, or one a slow relay failed to return, is not silently dropped by an edit.
+ */
+export function mergeServers(current: readonly string[], added: readonly string[], removed: readonly string[]): string[] {
+  const dropped = new Set(sanitizeServers(removed));
+  return sanitizeServers([...sanitizeServers(current).filter((url) => !dropped.has(url)), ...added]);
+}
+
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest("SHA-256", bytes as BufferSource);
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");

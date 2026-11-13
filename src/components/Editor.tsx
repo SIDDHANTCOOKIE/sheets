@@ -13,6 +13,7 @@ import {
   Eye,
   FileDown,
   FileSpreadsheet,
+  HardDrive,
   KeyRound,
   Loader2,
   LockKeyhole,
@@ -29,6 +30,7 @@ import { Menu, MenuItem, MenuSeparator } from "./Menu";
 import { LogoMark } from "./Logo";
 import { PersonDialog, TagDialog, type PersonChoice } from "./CellMetaDialogs";
 import { ShareDialog } from "./ShareDialog";
+import { StorageServersDialog } from "./StorageServersDialog";
 import { useAuth } from "../providers/AuthProvider";
 import { useLibrary } from "../providers/LibraryProvider";
 import { useProfiles } from "../providers/ProfileProvider";
@@ -194,6 +196,7 @@ export function Editor() {
   const [personOpen, setPersonOpen] = useState(false);
   const [tagOpen, setTagOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [storageOpen, setStorageOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const selectionRef = useRef<SelectionRange[]>([]);
 
@@ -932,6 +935,15 @@ export function Editor() {
                 )}
                 <MenuSeparator />
                 <MenuItem
+                  icon={<HardDrive size={15} />}
+                  label="Storage servers"
+                  onClick={() => {
+                    close();
+                    setStorageOpen(true);
+                  }}
+                />
+                <MenuSeparator />
+                <MenuItem
                   icon={<Trash2 size={15} />}
                   label={entry.role === "owner" ? "Delete spreadsheet" : "Remove from my sheets"}
                   danger
@@ -1083,6 +1095,8 @@ export function Editor() {
             : ""}
         </p>
       </Dialog>
+
+      <StorageServersDialog open={storageOpen} onClose={() => setStorageOpen(false)} />
     </div>
   );
 }

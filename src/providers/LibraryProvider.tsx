@@ -12,6 +12,7 @@ import { nip19, type Event } from "nostr-tools";
 import type { Sheet } from "@fortune-sheet/core";
 import {
   CLIENT_TAG,
+  KIND_BLOSSOM_SERVERS,
   KIND_SHEET,
   KIND_SHEET_GRANT,
   KIND_SHEET_META,
@@ -36,6 +37,7 @@ import {
 } from "../lib/nostr";
 import { createWorkbookFromFortune } from "../lib/workbook";
 import { BlobUnavailableError, SheetTooLargeError } from "../lib/v2/root";
+import { mergeServers } from "../lib/v2/blossom";
 import { templateById } from "../lib/templates";
 import {
   loadDocCache,
@@ -86,6 +88,14 @@ interface LibraryContextValue {
   revokeAccess: (entry: LibraryEntry, pubkey: string) => Promise<void>;
   subscribeToEntry: (entry: LibraryEntry, onEvent: (event: Event) => void) => () => void;
   buildShareLink: (entry: LibraryEntry, mode: "view" | "edit") => string;
+  /** The user's Blossom servers (their kind 10063 list), where large sheets are stored. */
+  blossomServers: string[];
+  refreshBlossomServers: () => Promise<string[]>;
+  /**
+   * Publishes the list. `removed` are servers the user took out; everything else already on
+   * their profile is kept, so a stale or failed read cannot wipe servers added elsewhere.
+   */
+  saveBlossomServers: (servers: string[], removed: string[]) => Promise<string[]>;
 }
 
 const LibraryContext = createContext<LibraryContextValue | undefined>(undefined);
@@ -304,6 +314,7 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   // Blossom: the user's server list (kind 10063), warmed after sign-in, and a per-sheet
   // memory of blobs already uploaded so a save only sends the tabs that changed.
   const serversRef = useRef<string[]>([]);
+  const [blossomServers, setBlossomServers] = useState<string[]>([]);
   const reuseRef = useRef(new Map<string, Map<string, ReuseEntry>>());
 
   const reuseFor = useCallback((coordinate: string) => {
@@ -319,13 +330,34 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
     if (!pubkey) return [];
     const list = await fetchBlossomServers(relays, pubkey).catch(() => []);
     serversRef.current = list;
+    setBlossomServers(list);
     return list;
   }, [pubkey, relays]);
 
   useEffect(() => {
     serversRef.current = [];
+    setBlossomServers([]);
     void fetchServers();
   }, [fetchServers]);
+
+  const saveBlossomServers = useCallback(
+    async (servers: string[], removed: string[]) => {
+      if (!signer || !pubkey) throw new Error("Please sign in first.");
+      // Read the current list again so servers added elsewhere (e.g. in Formstr Drive) survive.
+      const merged = mergeServers(await fetchServers(), servers, removed);
+      const event = await signer.signEvent({
+        kind: KIND_BLOSSOM_SERVERS,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: merged.map((url) => ["server", url]),
+        content: "",
+      });
+      await publishEvent(event, relays);
+      serversRef.current = merged;
+      setBlossomServers(merged);
+      return merged;
+    },
+    [fetchServers, pubkey, relays, signer],
+  );
 
   // Builds the sheet event. If the sheet is too big to store inline and we have not seen any
   // Blossom servers, look the list up again once (it may have been added since sign-in).
@@ -1018,6 +1050,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       revokeAccess,
       subscribeToEntry,
       buildShareLink,
+      blossomServers,
+      refreshBlossomServers: fetchServers,
+      saveBlossomServers,
     }),
     [
       entries,
@@ -1039,6 +1074,9 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       revokeAccess,
       subscribeToEntry,
       buildShareLink,
+      blossomServers,
+      fetchServers,
+      saveBlossomServers,
     ],
   );
 
