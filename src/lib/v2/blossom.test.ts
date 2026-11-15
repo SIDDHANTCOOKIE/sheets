@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { verifyEvent, type Event } from "nostr-tools";
-import { MAX_REPLICAS, downloadTabBody, mergeServers, prepareTab, sanitizeServers, uploadFrames } from "./blossom";
+import { MAX_REPLICAS, REPLICAS_WHEN_ON, downloadTabBody, mergeServers, prepareTab, sanitizeServers, uploadFrames } from "./blossom";
 import { BlobUnavailableError } from "./root";
 import { fakeBlossom, localSigner } from "./testUtils";
 
@@ -101,6 +101,19 @@ describe("Blossom upload and download", () => {
     for (const server of [B, C]) {
       expect(net.stores.get(server)?.has(uploaded.ref.x) ?? false).toBe(expected.includes(server));
     }
+  });
+
+  it("keeps a second copy on another server when asked to", async () => {
+    const net = fakeBlossom();
+    const { frameBytes } = await prepareTab({ x: 1 });
+    const [uploaded] = await uploadFrames([frameBytes], {
+      servers: [A, B, C],
+      signer: localSigner(),
+      fetch: net.fetch,
+      replicas: REPLICAS_WHEN_ON,
+    });
+    expect(uploaded.servers).toEqual([A, B]);
+    expect(net.stores.get(C)?.has(uploaded.ref.x) ?? false).toBe(false);
   });
 
   it("fails clearly when no server accepts the upload", async () => {

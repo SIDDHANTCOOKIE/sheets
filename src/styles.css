@@ -3468,6 +3468,7 @@ pre {
     gap: 0;
   }
 }
+
 /* ---------- Storage servers dialog ---------- */
 
 .server-list {
@@ -3522,6 +3523,51 @@ pre {
   line-height: 1.5;
 }
 
+
+.server-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.server-pick input,
+.server-toggle input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.server-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.server-toggle.is-disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.server-toggle span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+}
+
+.server-toggle small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
 /* ---------- File info dialog ---------- */
 
 .info-grid {

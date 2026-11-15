@@ -37,12 +37,15 @@ import {
 } from "../lib/nostr";
 import { createWorkbookFromFortune } from "../lib/workbook";
 import { BlobUnavailableError, SheetTooLargeError } from "../lib/v2/root";
-import { mergeServers } from "../lib/v2/blossom";
+import { MAX_REPLICAS, REPLICAS_WHEN_ON, mergeServers } from "../lib/v2/blossom";
 import { templateById } from "../lib/templates";
 import {
   loadDocCache,
   loadHiddenCoordinates,
   loadLibraryCache,
+  loadUploadPrefs,
+  saveUploadPrefs as persistUploadPrefs,
+  type UploadPrefs,
   saveDocCache,
   saveHiddenCoordinates,
   saveLibraryCache,
@@ -96,6 +99,9 @@ interface LibraryContextValue {
    * their profile is kept, so a stale or failed read cannot wipe servers added elsewhere.
    */
   saveBlossomServers: (servers: string[], removed: string[]) => Promise<string[]>;
+  /** Which servers uploads go to, and whether to keep a second copy. Stored on this device. */
+  uploadPrefs: UploadPrefs;
+  saveUploadPrefs: (prefs: UploadPrefs) => void;
 }
 
 const LibraryContext = createContext<LibraryContextValue | undefined>(undefined);
@@ -317,6 +323,23 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   const [blossomServers, setBlossomServers] = useState<string[]>([]);
   const reuseRef = useRef(new Map<string, Map<string, ReuseEntry>>());
 
+  const [uploadPrefs, setUploadPrefsState] = useState<UploadPrefs>({ off: [], replicate: false });
+  const prefsRef = useRef(uploadPrefs);
+  useEffect(() => {
+    const prefs = pubkey ? loadUploadPrefs(pubkey) : { off: [], replicate: false };
+    prefsRef.current = prefs;
+    setUploadPrefsState(prefs);
+  }, [pubkey]);
+
+  const saveUploadPrefs = useCallback(
+    (prefs: UploadPrefs) => {
+      prefsRef.current = prefs;
+      setUploadPrefsState(prefs);
+      if (pubkey) persistUploadPrefs(pubkey, prefs);
+    },
+    [pubkey],
+  );
+
   const reuseFor = useCallback((coordinate: string) => {
     let map = reuseRef.current.get(coordinate);
     if (!map) {
@@ -363,11 +386,20 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
   // Blossom servers, look the list up again once (it may have been added since sign-in).
   const buildEvent = useCallback(
     async (coordinate: string, params: Omit<Parameters<typeof buildSheetEvent>[0], "blossom">) => {
-      const attempt = (servers: string[]) =>
-        buildSheetEvent({
+      const attempt = (servers: string[]) => {
+        // Unticked servers are never uploaded to (they are still used to read sheets).
+        const { off, replicate } = prefsRef.current;
+        const targets = servers.filter((url) => !off.includes(url));
+        return buildSheetEvent({
           ...params,
-          blossom: { servers, signer: signer ?? undefined, reuse: reuseFor(coordinate) },
+          blossom: {
+            servers: targets,
+            replicas: replicate ? REPLICAS_WHEN_ON : MAX_REPLICAS,
+            signer: signer ?? undefined,
+            reuse: reuseFor(coordinate),
+          },
         });
+      };
       try {
         return await attempt(serversRef.current);
       } catch (error) {
@@ -1053,6 +1085,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       blossomServers,
       refreshBlossomServers: fetchServers,
       saveBlossomServers,
+      uploadPrefs,
+      saveUploadPrefs,
     }),
     [
       entries,
@@ -1077,6 +1111,8 @@ export function LibraryProvider({ children }: { children: ReactNode }) {
       blossomServers,
       fetchServers,
       saveBlossomServers,
+      uploadPrefs,
+      saveUploadPrefs,
     ],
   );
 

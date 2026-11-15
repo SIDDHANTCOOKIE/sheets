@@ -14,11 +14,12 @@ import { frame, unframe } from "./codec";
 import { BlobUnavailableError, type BlobRef } from "./root";
 
 /**
- * A blob is copied to at most this many of the user's servers. The spec asks for 2 when the
- * user has two or more; it is 1 for now because every extra copy repeats the whole upload,
- * which slows saves of big sheets. Raise it back to 2 to restore redundancy.
+ * A blob is copied to this many of the user's servers unless they opt in to more. Every extra
+ * copy repeats the whole upload, which slows saves of big sheets, so one is the default.
  */
 export const MAX_REPLICAS = 1;
+/** Copies when the user turns on "keep a second copy" (and has two servers ticked). */
+export const REPLICAS_WHEN_ON = 2;
 /** Blossom upload authorizations are short-lived: one is signed per save. */
 const AUTH_TTL_SECONDS = 600;
 
@@ -79,12 +80,13 @@ export async function prepareTab(body: unknown): Promise<{ frameBytes: Uint8Arra
  */
 export async function uploadFrames(
   frames: Uint8Array[],
-  options: { servers: readonly string[]; signer: FileSigner } & BlossomEnv,
+  options: { servers: readonly string[]; signer: FileSigner; replicas?: number } & BlossomEnv,
 ): Promise<UploadedBlob[]> {
   const servers = sanitizeServers(options.servers);
   if (servers.length === 0) throw new BlobUnavailableError("No Blossom server is configured.");
   if (frames.length === 0) return [];
 
+  const copies = Math.max(1, options.replicas ?? MAX_REPLICAS);
   const now = options.now ?? (() => Math.floor(Date.now() / 1000));
   const transport = createFetchBlossomTransport(options.fetch ?? fetch);
   const encrypted = await Promise.all(frames.map((bytes) => encryptFile(bytes)));
@@ -102,7 +104,7 @@ export async function uploadFrames(
     const accepted: string[] = [];
     const failures: string[] = [];
     for (const server of servers) {
-      if (accepted.length >= MAX_REPLICAS) break;
+      if (accepted.length >= copies) break;
       try {
         await transport.upload({ server, bytes: blob.bytes, authorization });
         accepted.push(server);

@@ -115,3 +115,23 @@ export function setTheme(theme: "light" | "dark"): void {
     .querySelector('meta[name="theme-color"]')
     ?.setAttribute("content", theme === "dark" ? "#0d0f10" : "#faf8f5");
 }
+
+/** Which of the user's Blossom servers uploads go to, and whether to keep a second copy. */
+export interface UploadPrefs {
+  /** Servers the user unticked: still used to read sheets, never uploaded to. */
+  off: string[];
+  /** Keep a second copy of every upload on another ticked server. */
+  replicate: boolean;
+}
+
+export function loadUploadPrefs(pubkey: string): UploadPrefs {
+  const stored = read<Partial<UploadPrefs>>(`upload-prefs:${pubkey}`);
+  return {
+    off: Array.isArray(stored?.off) ? stored.off.filter((url) => typeof url === "string") : [],
+    replicate: stored?.replicate === true,
+  };
+}
+
+export function saveUploadPrefs(pubkey: string, prefs: UploadPrefs): void {
+  write(`upload-prefs:${pubkey}`, prefs);
+}

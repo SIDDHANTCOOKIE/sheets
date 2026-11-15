@@ -35,8 +35,10 @@ export interface ReuseEntry {
 }
 
 export interface BlossomContext {
-  /** The user's Blossom servers (their kind 10063 list). */
+  /** Servers to upload to (the user's kind 10063 list, minus the ones they unticked). */
   servers: string[];
+  /** How many servers each blob is copied to. Defaults to one. */
+  replicas?: number;
   /** Signs the upload authorization. Required to save sheets that do not fit inline. */
   signer?: FileSigner;
   /**
@@ -95,7 +97,7 @@ async function buildBlossomRootFor(
   const missing = entries.flatMap((entry, index) => (entry ? [] : [index]));
   const uploaded = await uploadFrames(
     missing.map((index) => prepared[index].frameBytes),
-    { servers, signer: context.signer, ...context.env },
+    { servers, signer: context.signer, replicas: context.replicas, ...context.env },
   );
   missing.forEach((index, i) => {
     entries[index] = uploaded[i];

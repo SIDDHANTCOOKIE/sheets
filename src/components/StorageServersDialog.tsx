@@ -6,14 +6,17 @@ import { useToast } from "../providers/ToastProvider";
 import { sanitizeServers } from "../lib/v2/blossom";
 
 /**
- * Where large sheets are stored. This edits the user's Blossom server list (a Nostr
- * kind 10063 event), the same list other Nostr apps such as Formstr Drive use.
+ * Where large sheets are stored. The list is the user's Blossom server list (a Nostr
+ * kind 10063 event), shared with other Nostr apps such as Formstr Drive. Which servers
+ * are ticked, and whether to keep a second copy, are kept on this device.
  */
 export function StorageServersDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const library = useLibrary();
   const { toast } = useToast();
   const [loaded, setLoaded] = useState<string[] | null>(null);
   const [servers, setServers] = useState<string[]>([]);
+  const [unticked, setUnticked] = useState<string[]>([]);
+  const [replicate, setReplicate] = useState(false);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -24,6 +27,8 @@ export function StorageServersDialog({ open, onClose }: { open: boolean; onClose
     setLoaded(null);
     setDraft("");
     setError("");
+    setUnticked(library.uploadPrefs.off);
+    setReplicate(library.uploadPrefs.replicate);
     library
       .refreshBlossomServers()
       .then((list) => {
@@ -43,6 +48,10 @@ export function StorageServersDialog({ open, onClose }: { open: boolean; onClose
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
+  const ticked = servers.filter((url) => !unticked.includes(url));
+  // A second copy needs a second server to put it on.
+  const canReplicate = ticked.length >= 2;
+
   const add = () => {
     const [clean] = sanitizeServers([draft.trim()]);
     if (!clean) {
@@ -51,18 +60,28 @@ export function StorageServersDialog({ open, onClose }: { open: boolean; onClose
     }
     setError("");
     if (!servers.includes(clean)) setServers([...servers, clean]);
+    setUnticked(unticked.filter((url) => url !== clean));
     setDraft("");
   };
+
+  const toggle = (url: string) =>
+    setUnticked(unticked.includes(url) ? unticked.filter((item) => item !== url) : [...unticked, url]);
 
   const save = async () => {
     // A pending, valid address in the box counts as added.
     const pending = sanitizeServers([draft.trim()])[0];
     const next = pending && !servers.includes(pending) ? [...servers, pending] : servers;
-    const removed = (loaded ?? []).filter((url) => !next.includes(url));
+    const before = loaded ?? [];
+    const removed = before.filter((url) => !next.includes(url));
+    const added = next.filter((url) => !before.includes(url));
+    const nextOff = unticked.filter((url) => next.includes(url));
+    const nextTicked = next.filter((url) => !nextOff.includes(url));
     setSaving(true);
     setError("");
     try {
-      await library.saveBlossomServers(next, removed);
+      // Only the list itself is a Nostr event; skip the signer when it did not change.
+      if (removed.length > 0 || added.length > 0) await library.saveBlossomServers(next, removed);
+      library.saveUploadPrefs({ off: nextOff, replicate: replicate && nextTicked.length >= 2 });
       toast("Storage servers saved.", "success");
       onClose();
     } catch (err) {
@@ -96,7 +115,7 @@ export function StorageServersDialog({ open, onClose }: { open: boolean; onClose
     >
       <div className="new-sheet-panel">
         <div className="field">
-          <span className="field-label">Your servers</span>
+          <span className="field-label">Upload to these servers</span>
           {loaded === null ? (
             <div className="server-empty">
               <Loader2 size={14} className="spin" /> Looking up your server list…
@@ -107,10 +126,14 @@ export function StorageServersDialog({ open, onClose }: { open: boolean; onClose
             <ul className="server-list">
               {servers.map((url) => (
                 <li key={url}>
-                  <span>{url}</span>
+                  <label className="server-pick">
+                    <input type="checkbox" checked={!unticked.includes(url)} onChange={() => toggle(url)} />
+                    <span>{url}</span>
+                  </label>
                   <button
                     type="button"
                     className="icon-btn"
+                    title="Remove from my list"
                     aria-label={`Remove ${url}`}
                     onClick={() => setServers(servers.filter((item) => item !== url))}
                   >
@@ -120,7 +143,27 @@ export function StorageServersDialog({ open, onClose }: { open: boolean; onClose
               ))}
             </ul>
           )}
+          {servers.length > 0 && ticked.length === 0 && (
+            <div className="form-error">Tick at least one server, or sheets too big for a Nostr event can't be saved.</div>
+          )}
         </div>
+
+        <label className={`server-toggle${canReplicate ? "" : " is-disabled"}`}>
+          <input
+            type="checkbox"
+            checked={replicate && canReplicate}
+            disabled={!canReplicate}
+            onChange={(event) => setReplicate(event.target.checked)}
+          />
+          <span>
+            <strong>Keep a second copy on another server</strong>
+            <small>
+              {canReplicate
+                ? "Safer if one server goes down, but every save uploads twice, so big sheets save slower."
+                : "Tick two or more servers to turn this on."}
+            </small>
+          </span>
+        </label>
 
         <label className="field">
           <span className="field-label">Add a server</span>
@@ -143,8 +186,9 @@ export function StorageServersDialog({ open, onClose }: { open: boolean; onClose
         </label>
 
         <p className="server-note">
-          This is saved to your Nostr profile and shared with other apps that use Blossom. Saving asks your signer to
-          approve one event.
+          The list is saved to your Nostr profile and shared with other apps that use Blossom; changing it asks your
+          signer to approve one event. Unticked servers are still used to open sheets, just not to upload to. The ticks
+          and the second-copy choice stay on this device.
         </p>
 
         {error && <div className="form-error">{error}</div>}
