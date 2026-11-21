@@ -16,6 +16,10 @@ export interface Context {
   getCell(sheet: string, row: number, col: number): Scalar | FormulaError | undefined;
   /** How many rows and columns hold data, to size whole-column (A:A) and whole-row (1:1) references. */
   extent?(sheet: string): { rows: number; cols: number };
+  /** Whether a cell holds a formula (for ISFORMULA). */
+  hasFormula?(sheet: string, row: number, col: number): boolean;
+  /** Sheet names in tab order (for SHEET and SHEETS). */
+  sheetNames?(): string[];
   /** A defined name. */
   resolveName?(name: string): Value | undefined;
   /** Clock and randomness, injectable so results are testable. */

@@ -16,6 +16,7 @@ export interface EngineOptions {
   /** A typed (non-formula) cell's value; undefined or null for an empty cell. */
   getConstant(sheet: string, row: number, col: number): CellValue | undefined;
   extent?(sheet: string): { rows: number; cols: number };
+  sheetNames?: Context["sheetNames"];
   resolveName?: Context["resolveName"];
   now?: Context["now"];
   random?: Context["random"];
@@ -429,6 +430,8 @@ export class Engine {
         return formula ? formula.value : this.options.getConstant(sheet, row, col);
       },
       extent: this.options.extent,
+      hasFormula: (sheet, row, col) => this.at(sheet, row, col) !== undefined,
+      sheetNames: this.options.sheetNames,
       resolveName: this.options.resolveName,
       now: this.options.now,
       random: this.options.random,

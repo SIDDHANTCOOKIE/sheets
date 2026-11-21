@@ -5,6 +5,8 @@
 import * as formulajs from "@formulajs/formulajs";
 import { isArray, isError, toBoolean, toNumber } from "./coerce";
 import type { Context } from "./evaluate";
+import { BOND_FUNCTIONS } from "./bonds";
+import { EXTRA, UPPERCASE_RESULTS } from "./extras";
 import { ERROR_CODES, FormulaError, type Node, type Scalar, type Value } from "./types";
 
 export interface LazyContext {
@@ -92,6 +94,20 @@ export const LAZY_FUNCTIONS: Record<string, LazyFunction> = {
   ISNONTEXT: (args, { evaluate }) => typeof scalar(evaluate(args[0] ?? { t: "missing" })) !== "string",
   ISLOGICAL: (args, { evaluate }) => typeof scalar(evaluate(args[0] ?? { t: "missing" })) === "boolean",
   ISBLANK: (args, { evaluate }) => scalar(evaluate(args[0] ?? { t: "missing" })) === null,
+  ISREF: (args) => args[0]?.t === "ref" || args[0]?.t === "range",
+  ISFORMULA(args, { ctx }) {
+    const target = args[0];
+    if (target?.t !== "ref") return new FormulaError("#VALUE!");
+    return ctx.hasFormula?.(target.ref.sheet ?? ctx.sheet, target.ref.row, target.ref.col) ?? false;
+  },
+  SHEETS: (_args, { ctx }) => (ctx.sheetNames ? ctx.sheetNames().length : 1),
+  SHEET(args, { ctx }) {
+    const target = args[0];
+    const name = target && target.t !== "missing" && (target.t === "ref" || target.t === "range") ? (target.ref.sheet ?? ctx.sheet) : ctx.sheet;
+    const names = ctx.sheetNames?.() ?? [ctx.sheet];
+    const at = names.findIndex((candidate) => candidate.toLowerCase() === name.toLowerCase());
+    return at < 0 ? new FormulaError("#N/A") : at + 1;
+  },
   ROW(args, { ctx }) {
     const target = args[0];
     if (!target || target.t === "missing") return ctx.row === undefined ? new FormulaError("#VALUE!") : ctx.row + 1;
@@ -167,6 +183,31 @@ const OWN: Record<string, (args: (Value | undefined)[], ctx: Context) => Value> 
   },
 };
 
+Object.assign(OWN, EXTRA, BOND_FUNCTIONS, {
+  // T.DIST accepts any x; formulajs rejects 0. The cumulative form comes from the right tail.
+  "T.DIST"(args: (Value | undefined)[], ctx: Context): Value {
+    const x = toNumber(scalar(args[0] ?? null));
+    const df = args[1];
+    const cumulative = toBoolean(scalar(args[2] ?? true));
+    if (isError(x)) return x;
+    if (isError(cumulative)) return cumulative;
+    if (!cumulative) {
+      // The density, from its definition (formulajs 4.6 returns #NUM! for every call).
+      const n = toNumber(scalar(df ?? null));
+      if (isError(n)) return n;
+      if (n < 1) return new FormulaError("#NUM!");
+      const lnA = callFunction("GAMMALN", [(n + 1) / 2], ctx, true);
+      const lnB = callFunction("GAMMALN", [n / 2], ctx, true);
+      if (typeof lnA !== "number" || typeof lnB !== "number") return new FormulaError("#NUM!");
+      return Math.exp(lnA - lnB) / Math.sqrt(n * Math.PI) * (1 + (x * x) / n) ** (-(n + 1) / 2);
+    }
+    if (x === 0) return 0.5;
+    const tail = callFunction("T.DIST.RT", [Math.abs(x), df], ctx);
+    if (isError(tail) || typeof tail !== "number") return tail;
+    return x > 0 ? 1 - tail : tail;
+  },
+});
+
 /**
  * Excel's classic names, which formulajs 4 only has under their newer dotted names (STDEV is
  * STDEV.S there). FortuneSheet's formulajs 2.9 had them, so sheets in the wild use them.
@@ -206,6 +247,10 @@ const LEGACY_NAMES: Record<string, string> = {
   ZTEST: "Z.TEST",
   FTEST: "F.TEST",
   TTEST: "T.TEST",
+  ERFPRECISE: "ERF",
+  "ERF.PRECISE": "ERF",
+  ERFCPRECISE: "ERFC",
+  "ERFC.PRECISE": "ERFC",
 };
 
 /** Classic functions whose arguments differ from the modern one they became, so a rename is not enough. */
@@ -264,13 +309,14 @@ function fromLibrary(result: unknown): Value {
   return new FormulaError("#VALUE!");
 }
 
-export function callFunction(name: string, args: (Value | undefined)[], ctx: Context): Value {
-  const own = OWN[name];
+export function callFunction(name: string, args: (Value | undefined)[], ctx: Context, library = false): Value {
+  const own = library ? undefined : OWN[name];
   if (own) return own(args, ctx);
   const implementation = findImplementation(name);
   if (!implementation) return new FormulaError("#NAME?");
   try {
-    return fromLibrary(implementation(...args.map(toLibrary)));
+    const result = fromLibrary(implementation(...args.map(toLibrary)));
+    return typeof result === "string" && UPPERCASE_RESULTS.has(name) ? result.toUpperCase() : result;
   } catch {
     return new FormulaError("#VALUE!");
   }
