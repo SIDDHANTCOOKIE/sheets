@@ -159,6 +159,17 @@ export class BigSheetStore {
     return body.cells?.[`${row - start}:${col}`] ?? null;
   }
 
+  /** Every cell of a loaded chunk as [row, column, cell] (empty when the chunk is not in memory). */
+  *cellsOfChunk(tab: number, chunk: number): Generator<[number, number, WorkbookCell]> {
+    const body = this.cache.get(this.key(tab, chunk));
+    if (!body?.cells) return;
+    const start = this.tabs[tab].chunks[chunk].rowStart;
+    for (const [key, cell] of Object.entries(body.cells)) {
+      const at = key.indexOf(":");
+      yield [start + Number(key.slice(0, at)), Number(key.slice(at + 1)), cell];
+    }
+  }
+
   isLoaded(tab: number, row: number): boolean {
     return this.cache.has(this.key(tab, this.chunkFor(tab, row)));
   }

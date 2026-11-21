@@ -3735,6 +3735,8 @@ pre {
 .big-sheet-note { margin-right: 8px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .big-sheet-bar .btn { margin-right: 8px; height: 24px; }
 .big-sheet-scroll { flex: 1; min-height: 0; min-width: 0; overflow: auto; position: relative; background: #fff; color: #000; color-scheme: light; }
+.big-sheet-canvas { overflow: hidden; }
+.big-sheet-host { position: absolute; inset: 0; }
 .big-sheet-viewport { position: sticky; top: 0; left: 0; overflow: hidden; }
 .big-cell, .big-row-head, .big-col-head, .big-cell-input { position: absolute; box-sizing: border-box; font-family: var(--font), Arial, sans-serif; }
 .big-cell { padding: 0 4px; font-size: 11pt; line-height: 29px; border-right: 1px solid #e1e4e8; border-bottom: 1px solid #e1e4e8; white-space: nowrap; overflow: hidden; text-overflow: clip; cursor: cell; color: #000; }

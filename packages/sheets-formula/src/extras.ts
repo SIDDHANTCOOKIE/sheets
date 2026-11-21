@@ -378,6 +378,20 @@ export const EXTRA: Record<string, Fn> = {
     return formatValue(value, format);
   },
 
+  // Text to number the way a cell would read it; text that is no number, date or time is #VALUE!.
+  VALUE(args) {
+    const raw = first(args[0]);
+    if (isError(raw)) return raw;
+    if (typeof raw === "number") return raw;
+    if (typeof raw === "boolean" || raw === null) return VALUE();
+    const asNumber = toNumber(raw);
+    if (!isError(asNumber)) return asNumber;
+    const time = parseTime(raw);
+    if (time !== null) return time;
+    const date = parseDate(raw);
+    return date === null ? VALUE() : date;
+  },
+
   DATEVALUE(args) {
     const source = text(args[0]);
     if (isError(source)) return source;

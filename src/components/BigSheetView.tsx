@@ -1,10 +1,12 @@
-// Scrollable grid for sheets too big for the main editor. Only the rows on screen are drawn and
-// only the chunks holding them are downloaded (BigSheetStore), so an 11M-cell sheet scrolls in a
-// normal browser tab. Editing is switched by BIG_SHEET_EDITING.
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
+// Grid for sheets too big for the main editor. The canvas grid (@formstr/sheets-grid) draws only the
+// rows on screen and only the chunks holding them are downloaded (BigSheetStore), so an 11M-cell
+// sheet scrolls in a normal browser tab. Editing is switched by BIG_SHEET_EDITING.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { columnName, Grid, type GridData, type Selection } from "@formstr/sheets-grid";
 import { AlertTriangle, Loader2, Save } from "lucide-react";
 import { BIG_SHEET_EDITING } from "../lib/constants";
 import { BigSheetStore } from "../lib/v2/bigSheet";
+import { calculateTyped } from "../lib/v2/bigFormulas";
 import type { SheetRootV2 } from "../lib/v2/root";
 import { uploadProgress } from "../lib/v2/progress";
 import type { LibraryEntry } from "../lib/types";
@@ -14,20 +16,6 @@ import { BigSheetToolbar, shiftDecimals, type StylePatch } from "./BigSheetToolb
 import { useLibrary } from "../providers/LibraryProvider";
 import { useToast } from "../providers/ToastProvider";
 import { cx } from "../lib/utils";
-
-// Same geometry as the main editor's grid (Editor.tsx <Workbook>), so both modes look alike.
-const ROW_H = 30;
-const COL_W = 116;
-const HEAD_W = 46;
-const HEAD_H = 28;
-/** Browsers cap element heights (~17M px in Firefox); taller sheets scroll proportionally. */
-const MAX_SCROLL_PX = 10_000_000;
-
-function columnName(index: number): string {
-  let name = "";
-  for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) name = String.fromCharCode(65 + ((n - 1) % 26)) + name;
-  return name;
-}
 
 function shown(cell: WorkbookCell | null | undefined): string {
   return cell ? cellDisplay(cell) : "";
@@ -42,6 +30,31 @@ function restyle(cell: WorkbookCell | undefined, patch: StylePatch): WorkbookCel
   return { ...rest, style };
 }
 
+/** The store's tab as the grid reads it. */
+function tabData(store: BigSheetStore, tab: number): GridData {
+  return {
+    get rowCount() {
+      return store.tabs[tab]?.rows ?? 0;
+    },
+    get colCount() {
+      return store.tabs[tab]?.cols ?? 0;
+    },
+    cell(row, col) {
+      if (!store.isLoaded(tab, row)) return undefined;
+      const cell = store.cell(tab, row, col);
+      return cell ? { text: shown(cell), style: cell.style } : null;
+    },
+    ensure(first, end) {
+      const info = store.tabs[tab];
+      if (!info || info.chunks.length === 0 || end <= first) return;
+      const from = store.chunkFor(tab, first);
+      const to = store.chunkFor(tab, Math.max(first, end - 1));
+      for (let c = from; c <= to; c++) void store.load(tab, c).catch(() => {});
+    },
+    subscribe: (listener) => store.subscribe(listener),
+  };
+}
+
 export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: SheetRootV2 }) {
   const library = useLibrary();
   const { toast } = useToast();
@@ -51,17 +64,22 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   const [ready, setReady] = useState(false);
   const [openError, setOpenError] = useState("");
   const [tab, setTab] = useState(0);
-  const [, redraw] = useReducer((n: number) => n + 1, 0);
-  const [view, setView] = useState({ top: 0, left: 0, width: 800, height: 600 });
-  const [selected, setSelected] = useState<{ row: number; col: number } | null>(null);
-  /** Other corner of a shift-selected range (equals `selected` for a single cell). */
-  const [anchor, setAnchor] = useState<{ row: number; col: number } | null>(null);
+  const [, setVersion] = useState(0);
+  const [selection, setSelection] = useState<Selection | null>(null);
   /** Style copied by the paint-format button, applied to the next selection. */
   const [painting, setPainting] = useState<WorkbookCell["style"] | null>(null);
   const [editing, setEditing] = useState<{ row: number; col: number; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  /** Progress of a formula that has to read several chunks, e.g. =SUM(A:A). */
+  const [calculating, setCalculating] = useState<string | null>(null);
+  const hostRef = useRef<HTMLDivElement>(null);
+  const gridRef = useRef<Grid | null>(null);
+  /** Set by Escape so the blur that follows the input unmounting does not save the edit. */
+  const cancelled = useRef(false);
   const canEdit = BIG_SHEET_EDITING && !!entry.editKey;
+  // The grid's callbacks are created once, so they read the latest state through these refs.
+  const live = useRef({ canEdit, editing, painting, tab });
+  live.current = { canEdit, editing, painting, tab };
 
   useEffect(() => {
     let cancelled = false;
@@ -70,45 +88,77 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
       .open()
       .then(() => !cancelled && setReady(true))
       .catch((error) => !cancelled && setOpenError(error instanceof Error ? error.message : String(error)));
-    const off = store.subscribe(redraw);
+    // Toolbar state (undo/redo, dirty count) follows the store; the grid redraws itself.
+    const off = store.subscribe(() => setVersion((n) => n + 1));
     return () => {
       cancelled = true;
       off();
     };
   }, [store]);
 
-  const measure = useCallback(() => {
-    const el = scrollRef.current;
-    if (el) setView({ top: el.scrollTop, left: el.scrollLeft, width: el.clientWidth, height: el.clientHeight });
-  }, []);
-  useEffect(() => {
-    measure();
-    window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
-  }, [measure, ready]);
-
   const info = store.tabs[tab];
-  const rows = info?.rows ?? 0;
-  const cols = info?.cols ?? 0;
-  const totalPx = rows * ROW_H;
-  const scrollPx = Math.min(totalPx, MAX_SCROLL_PX);
-  const scale = totalPx > MAX_SCROLL_PX ? (totalPx - view.height) / (MAX_SCROLL_PX - view.height) : 1;
-  const virtualTop = view.top * scale;
-  const firstRow = Math.max(0, Math.min(rows - 1, Math.floor(virtualTop / ROW_H)));
-  const rowOffset = virtualTop - firstRow * ROW_H;
-  const visibleRows = Math.ceil((view.height - HEAD_H) / ROW_H) + 1;
-  const firstCol = Math.floor(view.left / COL_W);
-  const visibleCols = Math.ceil((view.width - HEAD_W) / COL_W) + 1;
-  const lastRow = Math.min(rows, firstRow + visibleRows);
-  const lastCol = Math.min(cols, firstCol + visibleCols);
 
-  // Fetch the chunks under the visible rows.
+  const range = selection?.ranges[selection.ranges.length - 1] ?? null;
+  const active = selection?.active ?? null;
+
+  const editRange = useCallback(
+    (change: (cell: WorkbookCell | undefined) => WorkbookCell | undefined, target?: Selection | null) => {
+      const area = (target ?? selection)?.ranges[(target ?? selection)!.ranges.length - 1];
+      if (!area || !canEdit) return;
+      store
+        .edit(tab, area.r1, area.c1, area.r2, area.c2, change)
+        .catch((error) => toast(error instanceof Error ? error.message : String(error), "error"));
+    },
+    [canEdit, selection, store, tab, toast],
+  );
+
+  // One grid for the life of the view; tabs swap its data.
   useEffect(() => {
-    if (!ready || !info || info.chunks.length === 0) return;
-    const from = store.chunkFor(tab, firstRow);
-    const to = store.chunkFor(tab, Math.max(firstRow, lastRow - 1));
-    for (let c = from; c <= to; c++) void store.load(tab, c).catch(() => {});
-  }, [ready, store, tab, info, firstRow, lastRow]);
+    const host = hostRef.current;
+    if (!ready || !host || !store.tabs[0]) return;
+    const grid = new Grid(host, {
+      data: tabData(store, live.current.tab),
+      onSelect: (next) => {
+        setSelection(next);
+        const style = live.current.painting;
+        if (style !== null && live.current.canEdit) {
+          setPainting(null);
+          const area = next.ranges[next.ranges.length - 1];
+          store
+            .edit(live.current.tab, area.r1, area.c1, area.r2, area.c2, (cell) => ({ ...(cell ?? {}), style: style ? { ...style } : undefined }))
+            .catch(() => {});
+        }
+      },
+      onEdit: (cell, text) => {
+        if (!live.current.canEdit || !store.isLoaded(live.current.tab, cell.row)) return;
+        const existing = store.cell(live.current.tab, cell.row, cell.col);
+        const initial = text ?? (existing?.formula ? `=${existing.formula.replace(/^=/, "")}` : shown(existing));
+        cancelled.current = false;
+        setEditing({ row: cell.row, col: cell.col, text: initial });
+      },
+      onClear: (next) => {
+        if (!live.current.canEdit) return;
+        const area = next.ranges[next.ranges.length - 1];
+        store
+          .edit(live.current.tab, area.r1, area.c1, area.r2, area.c2, (cell) => (cell?.style ? { style: cell.style } : undefined))
+          .catch((error) => toast(error instanceof Error ? error.message : String(error), "error"));
+      },
+    });
+    gridRef.current = grid;
+    return () => {
+      grid.destroy();
+      gridRef.current = null;
+    };
+    // The tab is read through `live`; switching tabs calls setData below, not a rebuild.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, store]);
+
+  const switchTab = (index: number) => {
+    setTab(index);
+    setSelection(null);
+    setEditing(null);
+    gridRef.current?.setData(tabData(store, index));
+  };
 
   const save = useCallback(async () => {
     if (store.dirtyCount === 0 || saving) return;
@@ -162,63 +212,41 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
     return () => window.removeEventListener("beforeunload", warn);
   }, [store]);
 
-  const commit = async () => {
+  const commit = async (move: "down" | "next" | "none") => {
     if (!editing) return;
     const { row, col, text } = editing;
     setEditing(null);
-    await store.setCell(tab, row, col, text);
+    if (text.trim().startsWith("=") && text.trim().length > 1) {
+      const formula = text.trim().slice(1);
+      try {
+        setCalculating("Calculating…");
+        const result = await calculateTyped(store, tab, row, col, formula, (done, total) =>
+          setCalculating(total > 1 ? `Calculating… chunk ${done} of ${total}` : "Calculating…"),
+        );
+        await store.edit(tab, row, col, row, col, (cell) => ({
+          ...(cell?.style ? { style: cell.style } : {}),
+          formula,
+          value: result.value,
+          ...(result.error ? { type: "error" as const } : {}),
+        }));
+      } catch (error) {
+        toast(error instanceof Error ? error.message : "Couldn't calculate that formula.", "error");
+      } finally {
+        setCalculating(null);
+      }
+    } else {
+      await store.setCell(tab, row, col, text);
+    }
+    gridRef.current?.afterEdit(move);
+    gridRef.current?.focus();
   };
 
-  const range = () => {
-    if (!selected) return null;
-    const a = anchor ?? selected;
-    return {
-      r1: Math.min(a.row, selected.row),
-      r2: Math.max(a.row, selected.row),
-      c1: Math.min(a.col, selected.col),
-      c2: Math.max(a.col, selected.col),
-    };
-  };
-  const inRange = (row: number, col: number) => {
-    const area = range();
-    return !!area && row >= area.r1 && row <= area.r2 && col >= area.c1 && col <= area.c2;
-  };
-  const editRange = (change: (cell: WorkbookCell | undefined) => WorkbookCell | undefined) => {
-    const area = range();
-    if (!area || !canEdit) return;
-    store.edit(tab, area.r1, area.c1, area.r2, area.c2, change).catch((error) =>
-      toast(error instanceof Error ? error.message : String(error), "error"),
-    );
-  };
   const applyStyle = (patch: StylePatch) => editRange((cell) => restyle(cell, patch));
-  const select = (row: number, col: number, extend: boolean) => {
-    setSelected({ row, col });
-    if (!extend) setAnchor({ row, col });
-    if (painting !== null && !extend) {
-      const style = painting;
-      setPainting(null);
-      if (canEdit) {
-        store
-          .edit(tab, row, col, row, col, (cell) => ({ ...(cell ?? {}), style: style ? { ...style } : undefined }))
-          .catch(() => {});
-      }
-    }
-  };
 
   const selectionLabel = () => {
-    const area = range();
-    if (!area) return "";
-    const first = `${columnName(area.c1)}${area.r1 + 1}`;
-    return area.r1 === area.r2 && area.c1 === area.c2 ? first : `${first}:${columnName(area.c2)}${area.r2 + 1}`;
-  };
-
-  /** Scrolls so `row` is on screen (used by Go to row). */
-  const goToRow = (row: number) => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const target = Math.max(0, Math.min(rows - 1, row));
-    el.scrollTop = (target * ROW_H) / scale;
-    select(target, selected?.col ?? 0, false);
+    if (!range) return "";
+    const first = `${columnName(range.c1)}${range.r1 + 1}`;
+    return range.r1 === range.r2 && range.c1 === range.c2 ? first : `${first}:${columnName(range.c2)}${range.r2 + 1}`;
   };
 
   if (openError) {
@@ -239,86 +267,17 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
     );
   }
 
-  const cells: ReactNode[] = [];
-  for (let row = firstRow; row < lastRow; row++) {
-    const y = HEAD_H + (row - firstRow) * ROW_H - rowOffset;
-    const loaded = store.isLoaded(tab, row);
-    cells.push(
-      <div key={`h${row}`} className="big-row-head" style={{ top: y, height: ROW_H, width: HEAD_W }}>
-        {(row + 1).toLocaleString()}
-      </div>,
-    );
-    for (let col = firstCol; col < lastCol; col++) {
-      const x = HEAD_W + col * COL_W - view.left;
-      const cell = loaded ? store.cell(tab, row, col) : undefined;
-      const isSel = selected?.row === row && selected.col === col;
-      const st = cell?.style;
-      if (editing && editing.row === row && editing.col === col) {
-        cells.push(
-          <input
-            key={`e${row}:${col}`}
-            className="big-cell-input"
-            style={{ top: y, left: x, width: COL_W, height: ROW_H }}
-            autoFocus
-            value={editing.text}
-            onChange={(event) => setEditing({ ...editing, text: event.target.value })}
-            onBlur={() => void commit()}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") void commit().then(() => select(row + 1, col, false));
-              if (event.key === "Escape") setEditing(null);
-            }}
-          />,
-        );
-        continue;
-      }
-      cells.push(
-        <div
-          key={`${row}:${col}`}
-          className={cx(
-            "big-cell",
-            isSel && "is-selected",
-            !isSel && inRange(row, col) && "is-in-range",
-            !loaded && "is-loading",
-          )}
-          style={{
-            top: y,
-            left: x,
-            width: COL_W,
-            height: ROW_H,
-            fontWeight: st?.bold ? 700 : undefined,
-            fontStyle: st?.italic ? "italic" : undefined,
-            textDecoration: [st?.underline && "underline", st?.strike && "line-through"].filter(Boolean).join(" ") || undefined,
-            fontFamily: st?.fontFamily,
-            fontSize: st?.fontSize ? `${Math.min(st.fontSize, 18)}pt` : undefined,
-            textAlign: st?.align,
-            whiteSpace: st?.wrap ? "normal" : undefined,
-            background: st?.background,
-            color: st?.color,
-          }}
-          onClick={(event) => select(row, col, event.shiftKey)}
-          onDoubleClick={() => canEdit && loaded && setEditing({ row, col, text: cell?.formula ? `=${cell.formula.replace(/^=/, "")}` : shown(cell) })}
-        >
-          {loaded ? shown(cell) : ""}
-        </div>,
-      );
-    }
-  }
-  for (let col = firstCol; col < lastCol; col++) {
-    cells.push(
-      <div key={`c${col}`} className="big-col-head" style={{ left: HEAD_W + col * COL_W - view.left, width: COL_W, height: HEAD_H }}>
-        {columnName(col)}
-      </div>,
-    );
-  }
-
-  const selectedCell = selected ? store.cell(tab, selected.row, selected.col) : undefined;
+  const selectedCell = active ? store.cell(tab, active.row, active.col) : undefined;
+  const rows = info.rows;
+  const grid = gridRef.current;
+  const editRect = editing && grid ? grid.cellRect(editing) : null;
 
   return (
     <div
       className="big-sheet"
       tabIndex={-1}
       onKeyDown={(event) => {
-        if (editing || !selected) return;
+        if (editing) return;
         const mod = event.ctrlKey || event.metaKey;
         const key = event.key.toLowerCase();
         if (mod && canEdit && (key === "z" || key === "y")) {
@@ -327,38 +286,16 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           else store.undo();
           return;
         }
-        if (mod && canEdit && (key === "b" || key === "i" || key === "u")) {
+        if (mod && canEdit && selection && (key === "b" || key === "i" || key === "u")) {
           event.preventDefault();
           const flag = key === "b" ? "bold" : key === "i" ? "italic" : "underline";
           applyStyle({ [flag]: !selectedCell?.style?.[flag] });
-          return;
-        }
-        const move = (dr: number, dc: number) => {
-          event.preventDefault();
-          select(
-            Math.max(0, Math.min(rows - 1, selected.row + dr)),
-            Math.max(0, Math.min(cols - 1, selected.col + dc)),
-            event.shiftKey && event.key !== "Tab",
-          );
-        };
-        if (event.key === "ArrowDown") move(1, 0);
-        else if (event.key === "ArrowUp") move(-1, 0);
-        else if (event.key === "ArrowRight" || event.key === "Tab") move(0, 1);
-        else if (event.key === "ArrowLeft") move(0, -1);
-        else if (canEdit && (event.key === "Enter" || event.key === "F2")) {
-          event.preventDefault();
-          setEditing({ ...selected, text: shown(selectedCell) });
-        } else if (canEdit && (event.key === "Delete" || event.key === "Backspace")) {
-          editRange((cell) => (cell?.style ? { style: cell.style } : undefined));
-        } else if (canEdit && event.key.length === 1 && !mod) {
-          setEditing({ ...selected, text: event.key });
-          event.preventDefault();
         }
       }}
     >
       <BigSheetToolbar
         style={selectedCell?.style ?? {}}
-        canEdit={canEdit && !!selected}
+        canEdit={canEdit && !!selection}
         canUndo={store.canUndo}
         canRedo={store.canRedo}
         painting={painting !== null}
@@ -385,11 +322,14 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           placeholder="Go to row"
           inputMode="numeric"
           onKeyDown={(event) => {
-            if (event.key === "Enter") goToRow(Number((event.target as HTMLInputElement).value.replace(/\D/g, "")) - 1);
+            if (event.key !== "Enter") return;
+            const row = Math.max(0, Math.min(rows - 1, Number((event.target as HTMLInputElement).value.replace(/\D/g, "")) - 1));
+            gridRef.current?.scrollToRow(row);
+            gridRef.current?.select({ ranges: [{ r1: row, r2: row, c1: active?.col ?? 0, c2: active?.col ?? 0 }], active: { row, col: active?.col ?? 0 }, anchor: { row, col: active?.col ?? 0 } });
           }}
         />
         <span className="big-sheet-note">
-          {rows.toLocaleString()} rows · large sheet mode{canEdit ? "" : " · read-only"}
+          {calculating ?? `${rows.toLocaleString()} rows · large sheet mode${canEdit ? "" : " · read-only"}`}
         </span>
         {canEdit && (
           <button type="button" className="btn btn-primary btn-sm" disabled={saving || store.dirtyCount === 0} onClick={() => void save()}>
@@ -398,28 +338,38 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           </button>
         )}
       </div>
-      <div ref={scrollRef} className="big-sheet-scroll" onScroll={measure}>
-        {/* Sticky viewport first, then the spacer that gives the scrollbars their length. */}
-        <div className="big-sheet-viewport" style={{ width: view.width, height: view.height }}>
-          {cells}
-          <div className="big-corner" style={{ width: HEAD_W, height: HEAD_H }} />
-        </div>
-        <div style={{ height: scrollPx + HEAD_H, width: HEAD_W + cols * COL_W, marginTop: -view.height }} />
+      <div className="big-sheet-scroll big-sheet-canvas">
+        <div ref={hostRef} className="big-sheet-host" />
+        {editing && editRect && (
+          <input
+            className="big-cell-input"
+            style={{ top: editRect.y, left: editRect.x, width: Math.max(editRect.width, 120), height: editRect.height }}
+            autoFocus
+            value={editing.text}
+            onChange={(event) => setEditing({ ...editing, text: event.target.value })}
+            onBlur={() => {
+              if (cancelled.current) cancelled.current = false;
+              else void commit("none");
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                void commit("down");
+              } else if (event.key === "Tab") {
+                event.preventDefault();
+                void commit("next");
+              } else if (event.key === "Escape") {
+                cancelled.current = true;
+                setEditing(null);
+                gridRef.current?.focus();
+              }
+            }}
+          />
+        )}
       </div>
       <div className="big-sheet-tabs">
         {store.tabs.map((item, index) => (
-          <button
-            key={item.name + index}
-            type="button"
-            className={cx("big-sheet-tab", index === tab && "is-active")}
-            onClick={() => {
-              setTab(index);
-              setSelected(null);
-              setAnchor(null);
-              setEditing(null);
-              if (scrollRef.current) scrollRef.current.scrollTop = 0;
-            }}
-          >
+          <button key={item.name + index} type="button" className={cx("big-sheet-tab", index === tab && "is-active")} onClick={() => switchTab(index)}>
             {item.name}
           </button>
         ))}
