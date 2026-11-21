@@ -33,7 +33,7 @@ import { useLibrary } from "../providers/LibraryProvider";
 import { useProfiles } from "../providers/ProfileProvider";
 import { useToast } from "../providers/ToastProvider";
 import { getTheme, setTheme } from "../lib/local";
-import { downloadText, formatRelativeTime, shortNpub } from "../lib/utils";
+import { downloadText, formatBytes, formatRelativeTime, shortNpub } from "../lib/utils";
 import { sheetPath } from "../lib/routes";
 import type { LibraryEntry, SheetDocument } from "../lib/types";
 
@@ -534,7 +534,10 @@ export function Dashboard() {
                       <span className={`role-chip role-${entry.role}`}>
                         {entry.role === "owner" ? "Owner" : entry.role === "editor" ? "Editor" : "Viewer"}
                       </span>
-                      <span>{formatRelativeTime(entry.lastOpenedAt ?? entry.updatedAt)}</span>
+                      <span className="sheet-card-stats">
+                        {entry.storedBytes ? <span title="Encrypted size in storage">{formatBytes(entry.storedBytes)}</span> : null}
+                        <span>{formatRelativeTime(entry.lastOpenedAt ?? entry.updatedAt)}</span>
+                      </span>
                       {entry.role !== "owner" && ownerProfile?.picture && (
                         <Avatar size={18} picture={ownerProfile.picture} name={ownerProfile.displayName} />
                       )}

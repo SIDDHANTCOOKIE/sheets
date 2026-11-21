@@ -2,14 +2,14 @@
 
 import { DEFAULT_CHUNK_SIZE } from "@formstr/drive-sdk";
 import type { WorkbookDocument } from "../workbook";
-import { prepareTab } from "./blossom";
+import { MAX_CHUNK_BYTES, planTab, type PlannedChunk } from "./chunks";
 import {
   INLINE_MAX_BYTES,
   buildBlossomRoot,
   buildInlineRoot,
   rootSize,
-  splitTab,
   type BlobRef,
+  type ChunkEntry,
   type SheetStorage,
 } from "./root";
 
@@ -22,8 +22,10 @@ export interface TabInfo {
   cells: number;
   /** The tab as plain JSON. */
   rawBytes: number;
-  /** The tab compressed and encrypted, i.e. the size of its Blossom blob. */
+  /** The tab compressed and encrypted, i.e. the total size of its Blossom blobs. */
   storedBytes: number;
+  /** How many chunks (blobs) the tab is cut into. */
+  chunks: number;
 }
 
 export interface FileInfo {
@@ -46,13 +48,16 @@ export function encryptedSize(plainBytes: number, segmentBytes = DEFAULT_CHUNK_S
 
 /** Measures a workbook the way it would be saved right now. */
 export async function measureWorkbook(doc: WorkbookDocument): Promise<FileInfo> {
-  const frames = await Promise.all(doc.sheets.map((sheet) => prepareTab(splitTab(sheet).body)));
+  // Cut the tabs exactly as a save would (default chunk size, no earlier layout to follow).
+  const plans: PlannedChunk[][] = [];
+  for (const sheet of doc.sheets) plans.push(await planTab(sheet, { max: MAX_CHUNK_BYTES }));
   const tabs: TabInfo[] = doc.sheets.map((sheet, index) => ({
     id: sheet.id,
     name: sheet.name,
     cells: Object.keys(sheet.cells).length,
     rawBytes: utf8.encode(JSON.stringify(sheet)).length,
-    storedBytes: encryptedSize(frames[index].frameBytes.length),
+    storedBytes: plans[index].reduce((sum, chunk) => sum + encryptedSize(chunk.size), 0),
+    chunks: plans[index].length,
   }));
   const base = { tabs, cells: tabs.reduce((sum, tab) => sum + tab.cells, 0), rawBytes: utf8.encode(JSON.stringify(doc)).length };
 
@@ -62,19 +67,22 @@ export async function measureWorkbook(doc: WorkbookDocument): Promise<FileInfo> 
   }
 
   // The event only holds pointers; size it with placeholder refs of the same shape.
-  const refs: BlobRef[] = tabs.map((tab, index) => ({
+  const placeholder = (chunk: { size: number }): BlobRef => ({
     x: "0".repeat(64),
     k: "0".repeat(64),
-    n: tab.storedBytes,
-    p: frames[index].frameBytes.length,
+    n: encryptedSize(chunk.size),
+    p: chunk.size,
     c: DEFAULT_CHUNK_SIZE,
     h: "0".repeat(64),
-  }));
+  });
+  const lists: ChunkEntry[][] = plans.map((chunks) =>
+    chunks.map((chunk) => ({ id: "00000000", ref: placeholder(chunk), rowStart: chunk.rowStart, rowCount: chunk.rowCount })),
+  );
   return {
     ...base,
     storage: "blossom",
-    eventBytes: rootSize(buildBlossomRoot(doc, refs, ["https://blossom.example.com"])),
+    eventBytes: rootSize(buildBlossomRoot(doc, lists, ["https://blossom.example.com"])),
     blobBytes: tabs.reduce((sum, tab) => sum + tab.storedBytes, 0),
-    blobCount: tabs.length,
+    blobCount: tabs.reduce((sum, tab) => sum + tab.chunks, 0),
   };
 }

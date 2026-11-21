@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { measureWorkbook, encryptedSize } from "./info";
-import { prepareTab, uploadFrames } from "./blossom";
-import { splitTab } from "./root";
+import { uploadFrames } from "./blossom";
+import { MAX_CHUNK_BYTES, planTab } from "./chunks";
 import { fakeBlossom, localSigner } from "./testUtils";
 import { createEmptyWorkbook, type WorkbookCell, type WorkbookDocument } from "../workbook";
 import { formatBytes } from "../utils";
@@ -45,7 +45,8 @@ describe("measureWorkbook", () => {
   it("predicts the exact size of the encrypted blob that gets uploaded", async () => {
     const doc = workbook(1, 800);
     const info = await measureWorkbook(doc);
-    const { frameBytes } = await prepareTab(splitTab(doc.sheets[0]).body);
+    const [plan] = await planTab(doc.sheets[0], { max: MAX_CHUNK_BYTES });
+    const frameBytes = plan.frame as Uint8Array;
     const [uploaded] = await uploadFrames([frameBytes], {
       servers: ["https://blossom.example"],
       signer: localSigner(),

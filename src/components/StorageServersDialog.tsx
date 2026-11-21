@@ -8,7 +8,7 @@ import { sanitizeServers } from "../lib/v2/blossom";
 /**
  * Where large sheets are stored. The list is the user's Blossom server list (a Nostr
  * kind 10063 event), shared with other Nostr apps such as Formstr Drive. Which servers
- * are ticked, and whether to keep a second copy, are kept on this device.
+ * are ticked is kept on this device. Every ticked server gets every upload (replication).
  */
 export function StorageServersDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const library = useLibrary();
@@ -16,7 +16,6 @@ export function StorageServersDialog({ open, onClose }: { open: boolean; onClose
   const [loaded, setLoaded] = useState<string[] | null>(null);
   const [servers, setServers] = useState<string[]>([]);
   const [unticked, setUnticked] = useState<string[]>([]);
-  const [replicate, setReplicate] = useState(false);
   const [draft, setDraft] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -28,7 +27,6 @@ export function StorageServersDialog({ open, onClose }: { open: boolean; onClose
     setDraft("");
     setError("");
     setUnticked(library.uploadPrefs.off);
-    setReplicate(library.uploadPrefs.replicate);
     library
       .refreshBlossomServers()
       .then((list) => {
@@ -49,8 +47,6 @@ export function StorageServersDialog({ open, onClose }: { open: boolean; onClose
   }, [open]);
 
   const ticked = servers.filter((url) => !unticked.includes(url));
-  // A second copy needs a second server to put it on.
-  const canReplicate = ticked.length >= 2;
 
   const add = () => {
     const [clean] = sanitizeServers([draft.trim()]);
@@ -75,13 +71,12 @@ export function StorageServersDialog({ open, onClose }: { open: boolean; onClose
     const removed = before.filter((url) => !next.includes(url));
     const added = next.filter((url) => !before.includes(url));
     const nextOff = unticked.filter((url) => next.includes(url));
-    const nextTicked = next.filter((url) => !nextOff.includes(url));
     setSaving(true);
     setError("");
     try {
       // Only the list itself is a Nostr event; skip the signer when it did not change.
       if (removed.length > 0 || added.length > 0) await library.saveBlossomServers(next, removed);
-      library.saveUploadPrefs({ off: nextOff, replicate: replicate && nextTicked.length >= 2 });
+      library.saveUploadPrefs({ off: nextOff });
       toast("Storage servers saved.", "success");
       onClose();
     } catch (err) {
@@ -115,7 +110,7 @@ export function StorageServersDialog({ open, onClose }: { open: boolean; onClose
     >
       <div className="new-sheet-panel">
         <div className="field">
-          <span className="field-label">Upload to these servers</span>
+          <span className="field-label">Replicate my data to these servers</span>
           {loaded === null ? (
             <div className="server-empty">
               <Loader2 size={14} className="spin" /> Looking up your server list…
@@ -148,22 +143,17 @@ export function StorageServersDialog({ open, onClose }: { open: boolean; onClose
           )}
         </div>
 
-        <label className={`server-toggle${canReplicate ? "" : " is-disabled"}`}>
-          <input
-            type="checkbox"
-            checked={replicate && canReplicate}
-            disabled={!canReplicate}
-            onChange={(event) => setReplicate(event.target.checked)}
-          />
-          <span>
-            <strong>Keep a second copy on another server</strong>
+        {ticked.length >= 2 && (
+          <div className="server-warning" role="alert">
+            <strong>
+              Your data is copied to all {ticked.length} ticked servers ({ticked.length}x).
+            </strong>
             <small>
-              {canReplicate
-                ? "Safer if one server goes down, but every save uploads twice, so big sheets save slower."
-                : "Tick two or more servers to turn this on."}
+              Upload bandwidth and storage used are multiplied by {ticked.length}, and big sheets save slower. Tick a
+              single server to store one copy and turn replication off.
             </small>
-          </span>
-        </label>
+          </div>
+        )}
 
         <label className="field">
           <span className="field-label">Add a server</span>
@@ -188,7 +178,7 @@ export function StorageServersDialog({ open, onClose }: { open: boolean; onClose
         <p className="server-note">
           The list is saved to your Nostr profile and shared with other apps that use Blossom; changing it asks your
           signer to approve one event. Unticked servers are still used to open sheets, just not to upload to. The ticks
-          and the second-copy choice stay on this device.
+          stay on this device.
         </p>
 
         {error && <div className="form-error">{error}</div>}
