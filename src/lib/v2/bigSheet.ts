@@ -30,6 +30,12 @@ const CACHE_CHUNKS = 6;
 export const MAX_EDIT_CELLS = 200_000;
 const UNDO_STEPS = 100;
 
+export interface CellAddress {
+  tab: number;
+  row: number;
+  col: number;
+}
+
 interface Change {
   tab: number;
   row: number;
@@ -60,6 +66,8 @@ export class BigSheetStore {
   private undoStack: Change[][] = [];
   private redoStack: Change[][] = [];
   private listeners = new Set<() => void>();
+  /** Called each time a chunk finishes loading (the formula index learns its formulas here). */
+  onChunkLoaded?: (tab: number, chunk: number) => void;
 
   constructor(root: SheetRootV2, servers: string[], env: BlossomEnv = {}) {
     this.root = root;
@@ -141,6 +149,7 @@ export class BigSheetStore {
           if (this.cache.size <= CACHE_CHUNKS) break;
           if (!this.dirty.has(old) && old !== key) this.cache.delete(old);
         }
+        this.onChunkLoaded?.(tab, chunk);
         this.emit();
         return body;
       });
@@ -157,6 +166,11 @@ export class BigSheetStore {
     if (!body) return undefined;
     const start = this.tabs[tab].chunks[chunk].rowStart;
     return body.cells?.[`${row - start}:${col}`] ?? null;
+  }
+
+  /** Is the chunk in memory right now? */
+  hasChunk(tab: number, chunk: number): boolean {
+    return this.cache.has(this.key(tab, chunk));
   }
 
   /** Every cell of a loaded chunk as [row, column, cell] (empty when the chunk is not in memory). */
@@ -235,18 +249,37 @@ export class BigSheetStore {
     return this.redoStack.length > 0;
   }
 
-  undo(): void {
+  /** Undoes the last edit; returns the cells it changed (so formulas that read them can be refreshed). */
+  undo(): CellAddress[] {
     const step = this.undoStack.pop();
-    if (!step) return;
+    if (!step) return [];
     this.apply(step, "before");
     this.redoStack.push(step);
+    return step.map(({ tab, row, col }) => ({ tab, row, col }));
   }
 
-  redo(): void {
+  redo(): CellAddress[] {
     const step = this.redoStack.pop();
-    if (!step) return;
+    if (!step) return [];
     this.apply(step, "after");
     this.undoStack.push(step);
+    return step.map(({ tab, row, col }) => ({ tab, row, col }));
+  }
+
+  /**
+   * Stores a calculated value (a formula's new result). Not an undo step: it is recomputed from the
+   * cells it reads, so undoing the edit that caused it recalculates it again.
+   */
+  async setDerived(tab: number, row: number, col: number, cell: WorkbookCell): Promise<void> {
+    await this.load(tab, this.chunkFor(tab, row));
+    const before = this.rawCell(tab, row, col);
+    if (JSON.stringify(before) === JSON.stringify(cell)) return;
+    this.apply([{ tab, row, col, before, after: cell }], "after");
+  }
+
+  /** Chunks currently in memory, as [tab, chunk]. */
+  loadedChunks(): [number, number][] {
+    return [...this.cache.keys()].map((key) => key.split(":").map(Number) as [number, number]);
   }
 
   private rawCell(tab: number, row: number, col: number): WorkbookCell | undefined {

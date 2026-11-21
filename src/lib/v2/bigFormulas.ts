@@ -7,7 +7,7 @@
 // Not done here: recalculating other formulas when a cell they read changes. That needs an index
 // of which cells hold formulas, which is the next step.
 import type { WorkbookCell } from "../workbook";
-import type { BigSheetStore } from "./bigSheet";
+import type { BigSheetStore, CellAddress } from "./bigSheet";
 
 export interface FormulaResult {
   value: string | number | boolean | null;
@@ -18,6 +18,8 @@ export interface FormulaResult {
 /** Most cells one formula may read (matches the engine's own limit). */
 const MAX_READ_CELLS = 5_000_000;
 const KEY = 16384;
+/** A read of this many cells or fewer is looked up cell by cell. */
+const SMALL_READ = 512;
 
 interface Rect {
   tab: number;
@@ -84,8 +86,22 @@ export async function calculateTyped(
   for (const { rect, chunk } of jobs) {
     await store.load(rect.tab, chunk);
     const target = grab(rect.tab);
-    for (const [r, c, cell] of store.cellsOfChunk(rect.tab, chunk)) {
-      if (r >= rect.r1 && r <= rect.r2 && c >= rect.c1 && c <= rect.c2) target.set(r * KEY + c, cell);
+    const entry = store.tabs[rect.tab].chunks[chunk];
+    const lastRow = chunk === store.tabs[rect.tab].chunks.length - 1 ? Number.MAX_SAFE_INTEGER : entry.rowStart + entry.rowCount - 1;
+    const r1 = Math.max(rect.r1, entry.rowStart);
+    const r2 = Math.min(rect.r2, lastRow);
+    if ((r2 - r1 + 1) * (rect.c2 - rect.c1 + 1) <= SMALL_READ) {
+      // A few cells (the usual `=A1*2`): look each one up instead of walking the whole chunk.
+      for (let r = r1; r <= r2; r++) {
+        for (let c = rect.c1; c <= rect.c2; c++) {
+          const cell = store.cell(rect.tab, r, c);
+          if (cell) target.set(r * KEY + c, cell);
+        }
+      }
+    } else {
+      for (const [r, c, cell] of store.cellsOfChunk(rect.tab, chunk)) {
+        if (r >= rect.r1 && r <= rect.r2 && c >= rect.c1 && c <= rect.c2) target.set(r * KEY + c, cell);
+      }
     }
     onProgress?.(++done, jobs.length);
   }
@@ -111,4 +127,290 @@ export async function calculateTyped(
   if (result instanceof FormulaError) return { value: result.code, error: true };
   // Excel keeps 15 significant digits, so 0.1+0.2 shows as 0.3 and a long sum has no float noise.
   return { value: typeof result === "number" && Number.isFinite(result) ? Number(result.toPrecision(15)) : result, error: false };
+}
+
+// ---- keeping dependent formulas up to date -----------------------------------------------------
+
+/** What a formula reads in one tab; `null` ends mean "to the last row/column" (A:A, 1:1). */
+interface Footprint {
+  tab: number;
+  r1: number;
+  c1: number;
+  r2: number | null;
+  c2: number | null;
+}
+
+interface FormulaEntry {
+  tab: number;
+  row: number;
+  col: number;
+  formula: string;
+  reads: Footprint[];
+}
+
+/** A rectangle of changed cells (inclusive). */
+export interface ChangedRect {
+  tab: number;
+  r1: number;
+  c1: number;
+  r2: number;
+  c2: number;
+}
+
+/** One cell as a rectangle. */
+export const pointRect = (cell: CellAddress): ChangedRect => ({ tab: cell.tab, r1: cell.row, c1: cell.col, r2: cell.row, c2: cell.col });
+
+const addressKey = (tab: number, row: number, col: number) => `${tab}:${row}:${col}`;
+const bare = (formula: string) => formula.replace(/^=/, "");
+
+/** Tells the caller how far a long job is; `phase` says whether it is still looking for formulas or recalculating. */
+export type RefreshProgress = (done: number, total: number, phase: "scan" | "calc") => void;
+
+/** Lets the page paint and respond now and then during a long job. */
+function breather(): () => Promise<void> {
+  let last = Date.now();
+  return async () => {
+    if (Date.now() - last < 40) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    last = Date.now();
+  };
+}
+
+/** A changed area this small is checked cell by cell against the formulas that read single cells. */
+const POINT_LOOKUP_MAX = 4096;
+
+/**
+ * Which cells hold formulas and what each reads. It learns formulas as chunks are opened and as
+ * they are typed; `ensureScanned` opens every other chunk in the background so that nothing is
+ * missed before the first recalculation.
+ */
+export class FormulaIndex {
+  private readonly entries = new Map<string, FormulaEntry>();
+  /** Formulas that read exactly one cell, by that cell. */
+  private readonly byPoint = new Map<string, Set<FormulaEntry>>();
+  /** Formulas that read a range (or an open-ended one): checked against every change. */
+  private readonly wide = new Set<FormulaEntry>();
+  private readonly scanned = new Set<string>();
+
+  get size(): number {
+    return this.entries.size;
+  }
+
+  has(tab: number, row: number, col: number): boolean {
+    return this.entries.has(addressKey(tab, row, col));
+  }
+
+  remove(tab: number, row: number, col: number): void {
+    const key = addressKey(tab, row, col);
+    const old = this.entries.get(key);
+    if (old) this.unregister(old);
+    this.entries.delete(key);
+  }
+
+  private register(entry: FormulaEntry): void {
+    let isWide = false;
+    for (const f of entry.reads) {
+      if (f.r2 === f.r1 && f.c2 === f.c1) {
+        const key = addressKey(f.tab, f.r1, f.c1);
+        let set = this.byPoint.get(key);
+        if (!set) this.byPoint.set(key, (set = new Set()));
+        set.add(entry);
+      } else isWide = true;
+    }
+    if (isWide) this.wide.add(entry);
+  }
+
+  private unregister(entry: FormulaEntry): void {
+    for (const f of entry.reads) {
+      const key = addressKey(f.tab, f.r1, f.c1);
+      const set = this.byPoint.get(key);
+      if (set) {
+        set.delete(entry);
+        if (set.size === 0) this.byPoint.delete(key);
+      }
+    }
+    this.wide.delete(entry);
+  }
+
+  /** Records (or replaces) the formula in a cell. Text that does not parse is recorded as reading nothing. */
+  async set(store: BigSheetStore, tab: number, row: number, col: number, formula: string): Promise<void> {
+    const engine = await import("@formstr/sheets-formula");
+    const text = bare(formula);
+    const reads: Footprint[] = [];
+    try {
+      for (const ref of engine.references(engine.parse(text))) {
+        const at = ref.sheet === undefined ? tab : store.tabs.findIndex((t) => t.name === ref.sheet);
+        if (at < 0) continue;
+        if (ref.kind === "cell" && ref.cell) reads.push({ tab: at, r1: ref.cell.row, c1: ref.cell.col, r2: ref.cell.row, c2: ref.cell.col });
+        else if (ref.range) reads.push({ tab: at, r1: ref.range.r1, c1: ref.range.c1, r2: ref.range.r2, c2: ref.range.c2 });
+      }
+    } catch {
+      // not a formula the engine understands: it reads nothing, so nothing refreshes it
+    }
+    this.remove(tab, row, col);
+    const entry: FormulaEntry = { tab, row, col, formula: text, reads };
+    this.entries.set(addressKey(tab, row, col), entry);
+    this.register(entry);
+  }
+
+  /** Learns the formulas in a loaded chunk. Returns false when the chunk was not in memory. */
+  async scanChunk(store: BigSheetStore, tab: number, chunk: number): Promise<boolean> {
+    if (!store.hasChunk(tab, chunk)) return false;
+    const found: [number, number, string][] = [];
+    for (const [row, col, cell] of store.cellsOfChunk(tab, chunk)) {
+      if (cell.formula && !this.has(tab, row, col)) found.push([row, col, cell.formula]);
+    }
+    for (const [row, col, formula] of found) await this.set(store, tab, row, col, formula);
+    this.scanned.add(`${tab}:${chunk}`);
+    return true;
+  }
+
+  /** Opens every chunk not looked at yet (a few at a time stay in memory) so every formula is known. */
+  async ensureScanned(store: BigSheetStore, onProgress?: RefreshProgress): Promise<void> {
+    const todo: [number, number][] = [];
+    store.tabs.forEach((info, tab) =>
+      info.chunks.forEach((_, chunk) => {
+        if (!this.scanned.has(`${tab}:${chunk}`)) todo.push([tab, chunk]);
+      }),
+    );
+    if (todo.length === 0) return;
+    const breathe = breather();
+    let done = 0;
+    for (const [tab, chunk] of todo) {
+      // Another load may push the chunk out before it is read; then it is simply loaded again.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await store.load(tab, chunk);
+        if (await this.scanChunk(store, tab, chunk)) break;
+      }
+      onProgress?.(++done, todo.length, "scan");
+      await breathe();
+    }
+  }
+
+  /** Brings the entry for a cell in line with what the sheet holds there now. */
+  async sync(store: BigSheetStore, tab: number, row: number, col: number): Promise<void> {
+    const cell = store.cell(tab, row, col);
+    if (cell?.formula) await this.set(store, tab, row, col, cell.formula);
+    else this.remove(tab, row, col);
+  }
+
+  /** Brings the entries inside a rectangle in line with the sheet (a clear or an undo can remove formulas). */
+  async syncArea(store: BigSheetStore, area: ChangedRect): Promise<void> {
+    if (area.r1 === area.r2 && area.c1 === area.c2) {
+      await store.load(area.tab, store.chunkFor(area.tab, area.r1));
+      await this.sync(store, area.tab, area.r1, area.c1);
+      return;
+    }
+    for (const entry of [...this.entries.values()]) {
+      if (entry.tab !== area.tab || entry.row < area.r1 || entry.row > area.r2 || entry.col < area.c1 || entry.col > area.c2) continue;
+      await this.sync(store, entry.tab, entry.row, entry.col);
+    }
+  }
+
+  /** Does the formula read any cell of the rectangle? */
+  private reads(entry: FormulaEntry, store: BigSheetStore, area: ChangedRect): boolean {
+    for (const f of entry.reads) {
+      if (f.tab !== area.tab) continue;
+      const info = store.tabs[area.tab];
+      const r2 = f.r2 ?? (info ? info.rows - 1 : Number.MAX_SAFE_INTEGER);
+      const c2 = f.c2 ?? (info ? info.cols - 1 : Number.MAX_SAFE_INTEGER);
+      if (f.r1 <= area.r2 && r2 >= area.r1 && f.c1 <= area.c2 && c2 >= area.c1) return true;
+    }
+    return false;
+  }
+
+  /** The formulas that read any cell of `area`. */
+  private readersOf(store: BigSheetStore, area: ChangedRect): Set<FormulaEntry> {
+    const out = new Set<FormulaEntry>();
+    const cells = (area.r2 - area.r1 + 1) * (area.c2 - area.c1 + 1);
+    if (cells <= POINT_LOOKUP_MAX) {
+      for (let r = area.r1; r <= area.r2; r++) {
+        for (let c = area.c1; c <= area.c2; c++) this.byPoint.get(addressKey(area.tab, r, c))?.forEach((e) => out.add(e));
+      }
+    } else {
+      for (const [key, set] of this.byPoint) {
+        const [tab, row, col] = key.split(":").map(Number);
+        if (tab === area.tab && row >= area.r1 && row <= area.r2 && col >= area.c1 && col <= area.c2) set.forEach((e) => out.add(e));
+      }
+    }
+    for (const entry of this.wide) if (this.reads(entry, store, area)) out.add(entry);
+    return out;
+  }
+
+  /** The formulas that must be recalculated after `changed` cells changed, in an order that works (inputs first). */
+  affected(store: BigSheetStore, changed: ChangedRect[]): { order: FormulaEntry[]; cyclic: FormulaEntry[] } {
+    const members = new Set<FormulaEntry>();
+    const readers = new Map<FormulaEntry, FormulaEntry[]>();
+    const waiting = new Map<FormulaEntry, number>();
+    const queue: FormulaEntry[] = [];
+    const reach = (from: ChangedRect, source: FormulaEntry | null) => {
+      for (const entry of this.readersOf(store, from)) {
+        if (source) {
+          // `entry` must wait for `source`
+          const list = readers.get(source) ?? [];
+          list.push(entry);
+          readers.set(source, list);
+          waiting.set(entry, (waiting.get(entry) ?? 0) + 1);
+        }
+        if (!members.has(entry)) {
+          members.add(entry);
+          waiting.set(entry, waiting.get(entry) ?? 0);
+          queue.push(entry);
+        }
+      }
+    };
+    for (const area of changed) reach(area, null);
+    for (let at = 0; at < queue.length; at++) reach(pointRect(queue[at]), queue[at]);
+
+    const order: FormulaEntry[] = [];
+    const ready = [...members].filter((e) => waiting.get(e) === 0);
+    for (let at = 0; at < ready.length; at++) {
+      const entry = ready[at];
+      order.push(entry);
+      for (const reader of readers.get(entry) ?? []) {
+        const left = (waiting.get(reader) ?? 1) - 1;
+        waiting.set(reader, left);
+        if (left === 0) ready.push(reader);
+      }
+    }
+    const placed = new Set(order);
+    return { order, cyclic: [...members].filter((e) => !placed.has(e)) };
+  }
+}
+
+/**
+ * After cells changed, recalculates every formula that reads them (and the formulas that read
+ * those), writing the new results into the sheet. First makes sure every chunk has been looked at
+ * for formulas, in the background, so none is skipped. Returns how many formulas were recalculated.
+ */
+export async function refreshDependents(
+  store: BigSheetStore,
+  index: FormulaIndex,
+  changed: ChangedRect[],
+  onProgress?: RefreshProgress,
+): Promise<number> {
+  for (const area of changed) await index.syncArea(store, area);
+  await index.ensureScanned(store, onProgress);
+  const { order, cyclic } = index.affected(store, changed);
+  const write = async (entry: { tab: number; row: number; col: number }, result: FormulaResult) => {
+    await store.load(entry.tab, store.chunkFor(entry.tab, entry.row));
+    const current = store.cell(entry.tab, entry.row, entry.col) ?? {};
+    const { type: _type, display: _display, ...rest } = current;
+    void _type;
+    void _display;
+    await store.setDerived(entry.tab, entry.row, entry.col, {
+      ...rest,
+      value: result.value,
+      ...(result.error ? { type: "error" as const } : {}),
+    });
+  };
+  const breathe = breather();
+  for (const entry of cyclic) await write(entry, { value: "#CIRC!", error: true });
+  let done = 0;
+  for (const entry of order) {
+    await write(entry, await calculateTyped(store, entry.tab, entry.row, entry.col, entry.formula));
+    onProgress?.(++done, order.length, "calc");
+    await breathe();
+  }
+  return order.length + cyclic.length;
 }

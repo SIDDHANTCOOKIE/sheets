@@ -6,7 +6,7 @@ import { columnName, Grid, type GridData, type Selection } from "@formstr/sheets
 import { AlertTriangle, Loader2, Save } from "lucide-react";
 import { BIG_SHEET_EDITING } from "../lib/constants";
 import { BigSheetStore } from "../lib/v2/bigSheet";
-import { calculateTyped } from "../lib/v2/bigFormulas";
+import { calculateTyped, FormulaIndex, pointRect, refreshDependents, type ChangedRect } from "../lib/v2/bigFormulas";
 import type { SheetRootV2 } from "../lib/v2/root";
 import { uploadProgress } from "../lib/v2/progress";
 import type { LibraryEntry } from "../lib/types";
@@ -98,6 +98,46 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
 
   const info = store.tabs[tab];
 
+  // Which cells hold formulas, so a change can refresh the formulas that read it.
+  const index = useMemo(() => new FormulaIndex(), [store]);
+  // Refreshes run one after another, so two quick edits never recalculate the same cells at once.
+  const refreshQueue = useRef<Promise<void>>(Promise.resolve());
+  const refresh = useCallback(
+    (areas: ChangedRect[]): Promise<void> => {
+      const job = refreshQueue.current.then(async () => {
+        try {
+          const count = await refreshDependents(store, index, areas, (done, total, phase) =>
+            setCalculating(
+              phase === "scan"
+                ? `Looking for formulas… ${done} of ${total} parts`
+                : total > 1
+                  ? `Updating formulas… ${done.toLocaleString()} of ${total.toLocaleString()}`
+                  : null,
+            ),
+          );
+          if (count > 0) setVersion((n) => n + 1);
+        } catch (error) {
+          toast(error instanceof Error ? error.message : "Couldn't update formulas.", "error");
+        } finally {
+          setCalculating(null);
+        }
+      });
+      refreshQueue.current = job;
+      return job;
+    },
+    [index, store, toast],
+  );
+  const refreshRef = useRef(refresh);
+  refreshRef.current = refresh;
+  useEffect(() => {
+    if (!ready) return;
+    store.onChunkLoaded = (tabNo, chunk) => void index.scanChunk(store, tabNo, chunk);
+    for (const [tabNo, chunk] of store.loadedChunks()) void index.scanChunk(store, tabNo, chunk);
+    return () => {
+      store.onChunkLoaded = undefined;
+    };
+  }, [ready, store, index]);
+
   const range = selection?.ranges[selection.ranges.length - 1] ?? null;
   const active = selection?.active ?? null;
 
@@ -141,6 +181,7 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
         const area = next.ranges[next.ranges.length - 1];
         store
           .edit(live.current.tab, area.r1, area.c1, area.r2, area.c2, (cell) => (cell?.style ? { style: cell.style } : undefined))
+          .then(() => refreshRef.current([{ tab: live.current.tab, r1: area.r1, c1: area.c1, r2: area.r2, c2: area.c2 }]))
           .catch((error) => toast(error instanceof Error ? error.message : String(error), "error"));
       },
     });
@@ -237,9 +278,13 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
     } else {
       await store.setCell(tab, row, col, text);
     }
+    await refresh([pointRect({ tab, row, col })]);
     gridRef.current?.afterEdit(move);
     gridRef.current?.focus();
   };
+
+  const undo = () => void refresh(store.undo().map(pointRect));
+  const redo = () => void refresh(store.redo().map(pointRect));
 
   const applyStyle = (patch: StylePatch) => editRange((cell) => restyle(cell, patch));
 
@@ -282,8 +327,8 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
         const key = event.key.toLowerCase();
         if (mod && canEdit && (key === "z" || key === "y")) {
           event.preventDefault();
-          if (key === "y" || event.shiftKey) store.redo();
-          else store.undo();
+          if (key === "y" || event.shiftKey) redo();
+          else undo();
           return;
         }
         if (mod && canEdit && selection && (key === "b" || key === "i" || key === "u")) {
@@ -299,8 +344,8 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
         canUndo={store.canUndo}
         canRedo={store.canRedo}
         painting={painting !== null}
-        onUndo={() => store.undo()}
-        onRedo={() => store.redo()}
+        onUndo={undo}
+        onRedo={redo}
         onPaint={() => setPainting(painting !== null ? null : { ...(selectedCell?.style ?? {}) })}
         onClear={() =>
           editRange((cell) =>
