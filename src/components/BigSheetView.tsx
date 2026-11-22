@@ -13,6 +13,7 @@ import {
   copyBlock,
   copyBlockNow,
   dragFill,
+  moveCells,
   fillArea,
   fromTsv,
   isLoadedArea,
@@ -321,6 +322,23 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
               anchor: { row: done.r1, col: done.c1 },
             });
             await refreshRef.current([written], true);
+          })
+          .catch((error) => toast(error instanceof Error ? error.message : String(error), "error"));
+      },
+      onMoveDrag: (source, target) => {
+        if (!live.current.canEdit) return;
+        const tabNo = live.current.tab;
+        moveCells(store, tabNo, source, target)
+          .then(async (done) => {
+            if (!done) return;
+            // Both the cells that left and the cells that arrived can change formulas that read them.
+            await refreshRef.current(
+              [
+                { tab: tabNo, ...source },
+                { tab: tabNo, ...done },
+              ],
+              true,
+            );
           })
           .catch((error) => toast(error instanceof Error ? error.message : String(error), "error"));
       },

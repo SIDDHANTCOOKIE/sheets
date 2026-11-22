@@ -4,6 +4,7 @@
 import type { WorkbookCell } from "../workbook";
 import { cellDisplay } from "../workbook/format";
 import { BigSheetStore, MAX_EDIT_CELLS } from "./bigSheet";
+import { copyBlock } from "./bigClipboard";
 
 export interface SortArea {
   r1: number;
@@ -46,17 +47,10 @@ export async function sortArea(
   if (merges.some((m) => m.r <= area.r2 && m.r + m.rs - 1 >= area.r1 && m.c <= area.c2 && m.c + m.cs - 1 >= area.c1)) {
     throw new Error("Cells in the selection are merged. Unmerge them to sort.");
   }
-  for (let c = store.chunkFor(tab, area.r1); c <= store.chunkFor(tab, area.r2); c++) await store.load(tab, c);
-  const block: (WorkbookCell | undefined)[][] = [];
-  for (let r = area.r1; r <= area.r2; r++) {
-    const row: (WorkbookCell | undefined)[] = [];
-    for (let c = area.c1; c <= area.c2; c++) {
-      const cell = store.cell(tab, r, c) ?? undefined;
-      if (cell?.formula) throw new Error("The selection has formulas. Sorting formulas isn't supported yet.");
-      row.push(cell);
-    }
-    block.push(row);
-  }
+  // Read chunk by chunk (a big selection can span more chunks than the cache keeps).
+  const copied = await copyBlock(store, tab, area);
+  const block = copied.cells;
+  if (block.some((row) => row.some((cell) => cell?.formula))) throw new Error("The selection has formulas. Sorting formulas isn't supported yet.");
   const order = block.map((_, index) => index);
   const key = keyCol - area.c1;
   order.sort((a, b) => compare(block[a][key], block[b][key], descending) || a - b);

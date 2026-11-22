@@ -88,32 +88,52 @@ export function isLoadedArea(store: BigSheetStore, tab: number, area: Area): boo
   return true;
 }
 
+/** A block made of copies of `cells` (rows of cells of `area`). */
+function blockFrom(area: Area, cells: (WorkbookCell | undefined)[][]): Block {
+  const text = cells.map((row) => row.map((cell) => (cell ? cellDisplay(cell) : "")));
+  return { row: area.r1, col: area.c1, rows: cells.length, cols: cells[0]?.length ?? 0, cells, text: toTsv(text) };
+}
+
 /** The cells of an area whose chunks are already in memory. */
 export function copyBlockNow(store: BigSheetStore, tab: number, area: Area): Block {
   const error = tooBig(area);
   if (error) throw error;
   const cells: (WorkbookCell | undefined)[][] = [];
-  const text: string[][] = [];
   for (let r = area.r1; r <= area.r2; r++) {
-    const cellRow: (WorkbookCell | undefined)[] = [];
-    const textRow: string[] = [];
+    const row: (WorkbookCell | undefined)[] = [];
     for (let c = area.c1; c <= area.c2; c++) {
       const cell = store.cell(tab, r, c) ?? undefined;
-      cellRow.push(cell ? structuredClone(cell) : undefined);
-      textRow.push(cell ? cellDisplay(cell) : "");
+      row.push(cell ? structuredClone(cell) : undefined);
     }
-    cells.push(cellRow);
-    text.push(textRow);
+    cells.push(row);
   }
-  return { row: area.r1, col: area.c1, rows: cells.length, cols: cells[0]?.length ?? 0, cells, text: toTsv(text) };
+  return blockFrom(area, cells);
 }
 
-/** Like `copyBlockNow`, downloading the chunks first. */
+/**
+ * Like `copyBlockNow`, downloading the chunks first. They are read one at a time, so an area that spans
+ * more chunks than the cache holds is still copied whole.
+ */
 export async function copyBlock(store: BigSheetStore, tab: number, area: Area): Promise<Block> {
   const error = tooBig(area);
   if (error) throw error;
-  for (let chunk = store.chunkFor(tab, area.r1); chunk <= store.chunkFor(tab, area.r2); chunk++) await store.load(tab, chunk);
-  return copyBlockNow(store, tab, area);
+  const cells: (WorkbookCell | undefined)[][] = Array.from({ length: area.r2 - area.r1 + 1 }, () => []);
+  const first = store.chunkFor(tab, area.r1);
+  const last = store.chunkFor(tab, area.r2);
+  for (let chunk = first; chunk <= last; chunk++) {
+    await store.load(tab, chunk);
+    const entry = store.tabs[tab].chunks[chunk];
+    const lo = chunk === first ? area.r1 : entry.rowStart;
+    const hi = chunk === last ? area.r2 : entry.rowStart + entry.rowCount - 1;
+    for (let r = lo; r <= hi; r++) {
+      const row = cells[r - area.r1];
+      for (let c = area.c1; c <= area.c2; c++) {
+        const cell = store.cell(tab, r, c) ?? undefined;
+        row.push(cell ? structuredClone(cell) : undefined);
+      }
+    }
+  }
+  return blockFrom(area, cells);
 }
 
 // ---- paste and fill ---------------------------------------------------------------------------
@@ -314,4 +334,42 @@ export async function dragFill(store: BigSheetStore, tab: number, source: Area, 
     return cell;
   });
   return target;
+}
+
+/**
+ * Moves the cells of `source` so that its top-left lands on `target`'s top-left. The cells keep their
+ * formulas as typed (references are not changed) and whatever was under them is replaced.
+ * One undo step when the two areas fit one edit, two otherwise. Returns the area they now occupy.
+ */
+export async function moveCells(store: BigSheetStore, tab: number, source: Area, target: Area): Promise<Area | null> {
+  const dr = target.r1 - source.r1;
+  const dc = target.c1 - source.c1;
+  if (dr === 0 && dc === 0) return null;
+  const moved: Area = { r1: source.r1 + dr, c1: source.c1 + dc, r2: source.r2 + dr, c2: source.c2 + dc };
+  checkFits(moved);
+  const block = await copyBlock(store, tab, source);
+  const inside = (area: Area, r: number, c: number) => r >= area.r1 && r <= area.r2 && c >= area.c1 && c <= area.c2;
+  const union: Area = {
+    r1: Math.min(source.r1, moved.r1),
+    c1: Math.min(source.c1, moved.c1),
+    r2: Math.max(source.r2, moved.r2),
+    c2: Math.max(source.c2, moved.c2),
+  };
+  if ((union.r2 - union.r1 + 1) * (union.c2 - union.c1 + 1) <= MAX_EDIT_CELLS) {
+    // Rows between the two areas are loaded too, which for a far move can be many parts: ask first.
+    await store.edit(tab, union.r1, union.c1, union.r2, union.c2, (before, r, c) => {
+      if (inside(moved, r, c)) {
+        const cell = block.cells[r - moved.r1][c - moved.c1];
+        return cell ? structuredClone(cell) : undefined;
+      }
+      return inside(source, r, c) ? undefined : before;
+    });
+  } else {
+    await store.edit(tab, source.r1, source.c1, source.r2, source.c2, () => undefined);
+    await store.edit(tab, moved.r1, moved.c1, moved.r2, moved.c2, (_before, r, c) => {
+      const cell = block.cells[r - moved.r1][c - moved.c1];
+      return cell ? structuredClone(cell) : undefined;
+    });
+  }
+  return moved;
 }

@@ -5,7 +5,7 @@ import { calculateTyped, FormulaIndex } from "./bigFormulas";
 import { editStructure, renameTabAndFormulas } from "./bigStructure";
 import { sortArea } from "./bigSort";
 import { BLANK, rowsToHide, scanColumn } from "./bigFilter";
-import { dragFill, extendSeries } from "./bigClipboard";
+import { copyBlock, dragFill, extendSeries, moveCells } from "./bigClipboard";
 import { editLayout } from "./layoutEdit";
 import { fakeBlossom, localSigner } from "./testUtils";
 import { buildLargeXlsx } from "../xlsxStream/testFixtures";
@@ -32,8 +32,8 @@ function inProcessWorker(): WorkerLike {
 const START = { maxChunkBytes: 64 * 1024, headRawBytes: 100_000, rawCap: 1_000_000 };
 const COLS = 8;
 
-async function open(label: string, tabs = 1) {
-  const bytes = await buildLargeXlsx({ tabs, rows: 3000, cols: COLS, sharedStrings: false });
+async function open(label: string, tabs = 1, rows = 3000) {
+  const bytes = await buildLargeXlsx({ tabs, rows, cols: COLS, sharedStrings: false });
   const fake = fakeBlossom();
   const signer = localSigner();
   const servers = [`https://${label}.test`];
@@ -398,5 +398,62 @@ describe("fill handle", () => {
     await set(30, 1, "Week 1");
     await dragFill(store, 0, { r1: 30, c1: 1, r2: 30, c2: 1 }, { r1: 30, c1: 1, r2: 30, c2: 4 });
     expect([2, 3, 4].map((c) => store.cell(0, 30, c)?.value)).toEqual(["Week 2", "Week 3", "Week 4"]);
+  }, 120_000);
+});
+
+describe("ranges that span more chunks than the cache holds", () => {
+  it("edits, copies, sorts and moves every row of a range over many chunks", async () => {
+    const { store } = await open("struct-many", 1, 12000);
+    const chunks = store.tabs[0].chunks.length;
+    expect(chunks).toBeGreaterThan(8); // the cache keeps 6
+    const last = store.tabs[0].rows - 1;
+    const rows = Math.min(last, 11_999);
+
+    await store.edit(0, 0, 20, rows, 20, (_cell, row) => ({ value: rows - row }));
+    for (let c = 0; c < chunks; c++) await store.load(0, c);
+    const missing: number[] = [];
+    for (let c = 0; c < chunks; c++) {
+      for (const [row, col, cell] of store.cellsOfChunk(0, c)) void row, col, cell;
+    }
+    for (let r = 0; r <= rows; r += 7) if (store.cell(0, r, 20)?.value !== rows - r) missing.push(r);
+    expect(missing).toEqual([]);
+
+    // Copy reads every chunk, not just the ones still cached.
+    const block = await copyBlock(store, 0, { r1: 0, c1: 20, r2: rows, c2: 20 });
+    expect(block.rows).toBe(rows + 1);
+    expect(block.cells.every((row, i) => row[0]?.value === rows - i)).toBe(true);
+
+    // Sort all of it, smallest first.
+    await sortArea(store, 0, { r1: 0, c1: 20, r2: rows, c2: 20 }, 20, false);
+    const sorted = await copyBlock(store, 0, { r1: 0, c1: 20, r2: rows, c2: 20 });
+    expect(sorted.cells.every((row, i) => row[0]?.value === i)).toBe(true);
+  }, 240_000);
+});
+
+describe("moving cells", () => {
+  it("moves values, formats and formulas, replaces what was there, and undoes in one step", async () => {
+    const { store } = await open("struct-move");
+    await store.load(0, 0);
+    await store.edit(0, 10, 0, 10, 0, () => ({ value: "keep", style: { bold: true } }));
+    await store.edit(0, 11, 0, 11, 0, () => ({ formula: "A11*2", value: 2 }));
+    await store.setCell(0, 20, 5, "old"); // will be overwritten
+
+    const moved = await moveCells(store, 0, { r1: 10, c1: 0, r2: 11, c2: 0 }, { r1: 20, c1: 5, r2: 21, c2: 5 });
+    expect(moved).toEqual({ r1: 20, c1: 5, r2: 21, c2: 5 });
+    expect(store.cell(0, 20, 5)).toMatchObject({ value: "keep", style: { bold: true } });
+    expect(store.cell(0, 21, 5)?.formula).toBe("A11*2"); // references are not changed
+    expect(store.cell(0, 10, 0)).toBeNull();
+    expect(store.cell(0, 11, 0)).toBeNull();
+
+    store.undo();
+    expect(store.cell(0, 10, 0)?.value).toBe("keep");
+    expect(store.cell(0, 20, 5)?.value).toBe("old");
+    expect(await moveCells(store, 0, { r1: 10, c1: 0, r2: 10, c2: 0 }, { r1: 10, c1: 0, r2: 10, c2: 0 })).toBeNull();
+
+    // Overlapping move: shifting down by one keeps every cell.
+    await store.setCell(0, 30, 2, "a");
+    await store.setCell(0, 31, 2, "b");
+    await moveCells(store, 0, { r1: 30, c1: 2, r2: 31, c2: 2 }, { r1: 31, c1: 2, r2: 32, c2: 2 });
+    expect([30, 31, 32].map((r) => store.cell(0, r, 2)?.value ?? null)).toEqual([null, "a", "b"]);
   }, 120_000);
 });

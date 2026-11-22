@@ -307,6 +307,8 @@ export class FormulaIndex {
 
   /** Brings the entry for a cell in line with what the sheet holds there now. */
   async sync(store: BigSheetStore, tab: number, row: number, col: number): Promise<void> {
+    // An unloaded chunk reads as "no cell": load it first so a formula there is not forgotten.
+    await store.load(tab, store.chunkFor(tab, row));
     const cell = store.cell(tab, row, col);
     if (cell?.formula) await this.set(store, tab, row, col, cell.formula);
     else this.remove(tab, row, col);

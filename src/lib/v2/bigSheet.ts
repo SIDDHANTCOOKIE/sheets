@@ -265,21 +265,37 @@ export class BigSheetStore {
     }
     const from = this.chunkFor(tab, r1);
     const to = this.chunkFor(tab, r2);
-    for (let c = from; c <= to; c++) await this.load(tab, c);
     const changes: Change[] = [];
-    for (let row = r1; row <= r2; row++) {
-      for (let col = c1; col <= c2; col++) {
-        const before = this.rawCell(tab, row, col);
-        const after = change(before ? structuredClone(before) : undefined, row, col);
-        if (JSON.stringify(before) === JSON.stringify(after)) continue;
-        changes.push({ tab, row, col, before, after });
+    try {
+      // One chunk at a time: a range can span more chunks than the cache holds, so each chunk's changes
+      // are written (and pinned as edited) before the next one is loaded.
+      for (let c = from; c <= to; c++) {
+        await this.load(tab, c);
+        const entry = this.tabs[tab].chunks[c];
+        const lo = c === from ? r1 : entry.rowStart;
+        const hi = c === to ? r2 : entry.rowStart + entry.rowCount - 1;
+        const local: Change[] = [];
+        for (let row = lo; row <= hi; row++) {
+          for (let col = c1; col <= c2; col++) {
+            const before = this.rawCell(tab, row, col);
+            const after = change(before ? structuredClone(before) : undefined, row, col);
+            if (JSON.stringify(before) === JSON.stringify(after)) continue;
+            local.push({ tab, row, col, before, after });
+          }
+        }
+        if (local.length > 0) {
+          this.apply(local, "after");
+          changes.push(...local);
+        }
+      }
+    } finally {
+      // Even when a download failed half way, what was already written can be undone.
+      if (changes.length > 0) {
+        this.undoStack.push(changes);
+        if (this.undoStack.length > UNDO_STEPS) this.undoStack.shift();
+        this.redoStack = [];
       }
     }
-    if (changes.length === 0) return;
-    this.apply(changes, "after");
-    this.undoStack.push(changes);
-    if (this.undoStack.length > UNDO_STEPS) this.undoStack.shift();
-    this.redoStack = [];
   }
 
   get canUndo(): boolean {

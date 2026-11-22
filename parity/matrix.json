@@ -37,7 +37,7 @@
       "set row height / column width": "done",
       "sort selection": "done",
       "sort with header row dialog": "done",
-      "drag to move selection": "todo",
+      "drag to move selection": "done",
       "multi-range selection": "done",
       "select whole row / column / all": "done"
     },
