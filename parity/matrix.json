@@ -21,7 +21,7 @@
       "link": "done",
       "comment": "done",
       "quick formula (SUM, AVERAGE...)": "done",
-      "data validation": "todo",
+      "data validation": "done",
       "search / find and replace": "done",
       "person tag, tag pill": "todo"
     },
@@ -67,7 +67,7 @@
       "manual calculation mode": "todo"
     },
     "Data features": {
-      "data validation (dropdown, number, date, text length...)": "todo",
+      "data validation (dropdown, number, date, text length...)": "partial",
       "conditional formatting (rules, data bars, colour scales)": "todo",
       "hyperlinks": "done",
       "comments": "done",

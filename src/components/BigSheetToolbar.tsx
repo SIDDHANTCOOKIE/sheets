@@ -100,6 +100,7 @@ export function BigSheetToolbar({
   onSearch,
   onLink,
   onComment,
+  onValidation,
   onBorder,
   onMerge,
   canSplit,
@@ -124,6 +125,7 @@ export function BigSheetToolbar({
   onSearch: () => void;
   onLink: () => void;
   onComment: () => void;
+  onValidation: () => void;
   /** Zoom as a fraction (1 = 100%) and how to change it. */
   zoom: { value: number; set: (zoom: number) => void };
   /** Puts a border on the selection. */
@@ -404,7 +406,7 @@ export function BigSheetToolbar({
           <option value="MIN">Min</option>
         </select>
       </label>
-      <Button title="Data validation" disabled>
+      <Button title="Data validation" disabled={off} onClick={onValidation}>
         <ListChecks size={16} />
       </Button>
       <Button title="Find (Ctrl+F)" onClick={onSearch}>

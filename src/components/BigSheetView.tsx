@@ -25,6 +25,8 @@ import type { LibraryEntry } from "../lib/types";
 import type { WorkbookCell } from "../lib/workbook";
 import { cellDisplay } from "../lib/workbook/format";
 import { BigFindBar } from "./BigFindBar";
+import { BigValidationDialog } from "./BigValidationDialog";
+import { validate } from "../lib/v2/bigValidation";
 import { BigSheetToolbar, shiftDecimals, type StylePatch } from "./BigSheetToolbar";
 import { useLibrary } from "../providers/LibraryProvider";
 import { useToast } from "../providers/ToastProvider";
@@ -111,6 +113,7 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   const [painting, setPainting] = useState<WorkbookCell["style"] | null>(null);
   const [editing, setEditing] = useState<{ row: number; col: number; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
+  const [validating, setValidating] = useState(false);
   /** What is typed in the name box (null: show the selection). */
   const [nameDraft, setNameDraft] = useState<string | null>(null);
   /** The find bar (Ctrl+F), with the replace row when opened by Ctrl+H. */
@@ -654,6 +657,14 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
         setCalculating(null);
       }
     } else {
+      const rule = store.cell(tab, row, col)?.validation;
+      const problem = rule ? validate(rule, text) : null;
+      if (problem) {
+        // Rejected: the cell keeps its old content and the editor stays open for a fix.
+        toast(problem, "error");
+        setEditing({ row, col, text });
+        return;
+      }
       await store.setCell(tab, row, col, text);
     }
     await refresh([pointRect({ tab, row, col })]);
@@ -762,6 +773,7 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           )
         }
         onStyle={applyStyle}
+        onValidation={() => setValidating(true)}
         onLink={editLink}
         onComment={editComment}
         onQuickFormula={(name) => void quickFormula(name)}
@@ -827,6 +839,26 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           </button>
         )}
       </div>
+      {validating && range && (
+        <BigValidationDialog
+          current={selectedCell?.validation}
+          rangeLabel={selectionLabel()}
+          onClose={() => setValidating(false)}
+          onSave={(rule) => {
+            setValidating(false);
+            editRange((cell) => ({ ...(cell ?? {}), validation: rule }));
+          }}
+          onRemove={() => {
+            setValidating(false);
+            editRange((cell) => {
+              if (!cell?.validation) return cell;
+              const { validation: _validation, ...rest } = cell;
+              void _validation;
+              return Object.keys(rest).length > 0 ? rest : undefined;
+            });
+          }}
+        />
+      )}
       {finding && (
         <BigFindBar
           key={finding.replace ? "replace" : "find"}
@@ -849,12 +881,20 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
       )}
       <div className="big-sheet-scroll big-sheet-canvas">
         <div ref={hostRef} className="big-sheet-host" />
+        {editing && (
+          <datalist id="big-validation-options">
+            {(store.cell(tab, editing.row, editing.col)?.validation?.options ?? []).map((option) => (
+              <option key={option} value={option} />
+            ))}
+          </datalist>
+        )}
         {editing && editRect && (
           <input
             className="big-cell-input"
             style={{ top: editRect.y, left: editRect.x, width: Math.max(editRect.width, 120), height: editRect.height }}
             autoFocus
             value={editing.text}
+            list={store.cell(tab, editing.row, editing.col)?.validation?.type === "list" ? "big-validation-options" : undefined}
             onChange={(event) => setEditing({ ...editing, text: event.target.value })}
             onBlur={() => {
               if (cancelled.current) cancelled.current = false;

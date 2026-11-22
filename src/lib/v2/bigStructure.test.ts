@@ -224,11 +224,11 @@ describe("links and comments", () => {
   it("keep their data through save and reload and move with inserted rows", async () => {
     const { store, reopen } = await open("struct-notes");
     await store.load(0, 0);
-    await store.edit(0, 5, 2, 5, 2, () => ({ value: "site", link: { url: "https://example.com" }, comment: "check me" }));
+    await store.edit(0, 5, 2, 5, 2, () => ({ value: "site", link: { url: "https://example.com" }, comment: "check me", validation: { type: "list", options: ["site", "other"] } }));
     await store.applyEdit(0, { kind: "insert", axis: "row", index: 2, count: 2 });
     const again = await reopen();
     await again.load(0, 0);
-    expect(again.cell(0, 7, 2)).toMatchObject({ value: "site", link: { url: "https://example.com" }, comment: "check me" });
+    expect(again.cell(0, 7, 2)).toMatchObject({ value: "site", link: { url: "https://example.com" }, comment: "check me", validation: { type: "list", options: ["site", "other"] } });
     expect(again.cell(0, 5, 2)?.comment).toBeUndefined();
   }, 120_000);
 });
