@@ -36,7 +36,7 @@
       "hide / show rows and columns": "done",
       "set row height / column width": "done",
       "sort selection": "done",
-      "sort with header row dialog": "todo",
+      "sort with header row dialog": "done",
       "drag to move selection": "todo",
       "multi-range selection": "done",
       "select whole row / column / all": "done"

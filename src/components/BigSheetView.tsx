@@ -28,6 +28,7 @@ import { BigFindBar } from "./BigFindBar";
 import { BigValidationDialog } from "./BigValidationDialog";
 import { BigConditionalDialog } from "./BigConditionalDialog";
 import { BigFilterDialog } from "./BigFilterDialog";
+import { BigSortDialog } from "./BigSortDialog";
 import { formatFor, withoutArea } from "../lib/v2/bigConditional";
 import { validate } from "../lib/v2/bigValidation";
 import { BigSheetToolbar, shiftDecimals, type StylePatch } from "./BigSheetToolbar";
@@ -123,6 +124,7 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   const [saving, setSaving] = useState(false);
   const [validating, setValidating] = useState(false);
   const [filtering, setFiltering] = useState(false);
+  const [sortDialog, setSortDialog] = useState(false);
   /** Right-click menu of a sheet tab (page position of its bottom-left, which tab). */
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; index: number } | null>(null);
   /** Function names for formula autocomplete (loaded the first time a formula is typed). */
@@ -640,12 +642,15 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   };
 
   /** Sorts the selected rows by the column of the active cell. */
-  const sort = (descending: boolean) => {
+  const sort = (descending: boolean, options: { col?: number; header?: boolean } = {}) => {
     if (!canEdit || !range || !active) return;
     const tabNo = tab;
-    sortArea(store, tabNo, range, Math.min(Math.max(active.col, range.c1), range.c2), descending, store.tabs[tabNo].layout.merges ?? [])
+    // With a header row the first selected row stays where it is.
+    const area = options.header ? { ...range, r1: range.r1 + 1 } : range;
+    const key = Math.min(Math.max(options.col ?? active.col, range.c1), range.c2);
+    sortArea(store, tabNo, area, key, descending, store.tabs[tabNo].layout.merges ?? [])
       .then(async (moved) => {
-        if (moved) await refresh([{ tab: tabNo, r1: range.r1, c1: range.c1, r2: range.r2, c2: range.c2 }]);
+        if (moved) await refresh([{ tab: tabNo, r1: area.r1, c1: area.c1, r2: area.r2, c2: area.c2 }]);
       })
       .catch((error) => toast(error instanceof Error ? error.message : "Couldn't sort.", "error"));
   };
@@ -981,6 +986,19 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           </button>
         )}
       </div>
+      {sortDialog && range && active && (
+        <BigSortDialog
+          firstCol={range.c1}
+          lastCol={range.c2}
+          activeCol={active.col}
+          rows={range.r2 - range.r1 + 1}
+          onClose={() => setSortDialog(false)}
+          onSort={({ col, descending, header }) => {
+            setSortDialog(false);
+            sort(descending, { col, header });
+          }}
+        />
+      )}
       {filtering && active && (
         <BigFilterDialog
           key={`${tab}:${active.col}`}
@@ -1161,6 +1179,7 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
                 ["Open link", openLink, !!selectedCell?.link],
                 ["Remove link", removeLink, !!selectedCell?.link],
                 [selectedCell?.comment ? "Edit comment…" : "Add comment…", editComment, true],
+                ["Sort range…", () => setSortDialog(true), range.r2 > range.r1],
                 ["Set row height…", () => askSize("rows"), true],
                 ["Set column width…", () => askSize("columns"), true],
                 ["Show hidden rows here", () => setHidden("rows", false), hiddenNear("rows")],
