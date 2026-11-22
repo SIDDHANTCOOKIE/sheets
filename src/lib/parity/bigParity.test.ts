@@ -42,7 +42,7 @@ function view(doc: WorkbookDocument) {
   const sheet = doc.sheets[0];
   const cells = Object.fromEntries(
     Object.entries(sheet.cells)
-      .map(([cellKey, cell]) => [cellKey, { value: cell.value ?? null, formula: (cell.formula ?? "").replace(/^=/, "") || null, style: cell.style ?? {} }] as const)
+      .map(([cellKey, cell]) => [cellKey, { value: typeof cell.value === "number" ? Number(cell.value.toPrecision(12)) : (cell.value ?? null), formula: (cell.formula ?? "").replace(/^=/, "") || null, style: cell.style ?? {} }] as const)
       .filter(([, cell]) => cell.value !== null || cell.formula !== null || Object.keys(cell.style).length > 0)
       .sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true })),
   );
@@ -190,6 +190,18 @@ const SCENARIOS: Record<string, Step[]> = {
   ],
 };
 
+// Many common formulas, one scenario each: both engines must give the same results.
+const FORMULAS = [
+  "=SUM(B2:B4)", "=AVERAGE(B2:B4)", "=MAX(B2:B4)", "=MIN(B2:B4)", "=COUNT(B1:B4)", "=COUNTA(A1:A4)", "=IF(B2>1000,\"big\",\"small\")",
+  "=ROUND(B2/7,2)", "=ABS(-B3)", "=B2*B3+B4", "=B2^2", "=SQRT(B3+B4)", "=MOD(B2,7)", "=INT(B2/7)", "=LEN(A2)", "=UPPER(A2)", "=LOWER(A3)",
+  "=LEFT(A2,2)", "=RIGHT(A3,2)", "=CONCATENATE(A2,\"-\",A3)", "=A2&\" \"&A3", "=COUNTIF(B2:B4,\">100\")", "=SUMIF(B2:B4,\">100\")",
+  "=AND(B2>1,B3>1)", "=OR(B2>5000,B3>5000)", "=NOT(B2>1)", "=MEDIAN(B2:B4)", "=PRODUCT(B3:B4)", "=SUM(B2:B4)/COUNT(B2:B4)",
+  "=VLOOKUP(\"Food\",A2:B4,2,FALSE)", "=INDEX(B2:B4,2)", "=MATCH(\"Gas\",A2:A4,0)", "=ISNUMBER(B2)", "=ISTEXT(A2)", "=IFERROR(B2/0,\"oops\")",
+  "=TEXT(B2,\"0.00\")", "=TRIM(\"  a  b \")", "=SUBSTITUTE(A2,\"e\",\"E\")", "=ROUNDUP(B2/7,1)", "=ROUNDDOWN(B2/7,1)", "=CEILING(B2,50)", "=FLOOR(B2,50)",
+  "=POWER(2,10)", "=LARGE(B2:B4,2)", "=SMALL(B2:B4,2)", "=COUNTBLANK(B1:B6)", "=ROW(B3)", "=COLUMN(C1)", "=PI()", "=EXP(1)", "=LN(10)", "=LOG10(1000)",
+];
+for (const formula of FORMULAS) SCENARIOS[`formula ${formula}`] = [{ op: "set", row: 8, col: 3, value: formula }];
+
 /** Scenarios where FortuneSheet and the big-sheet store differ, with the reason. The big-sheet answer is pinned. */
 type View = ReturnType<typeof view>;
 const withValue = (reference: View, cell: string, value: string | number): View => ({
@@ -216,6 +228,18 @@ const DIVERGENCES: Record<string, { reason: string; big: (reference: View) => Vi
     big: (reference) => withValue(reference, "7:1", 1280),
   },
 };
+
+// Where FortuneSheet's own answer is wrong or missing, ours follows Excel.
+const FORTUNE_WRONG: Record<string, { reason: string; value: string | number }> = {
+  '=VLOOKUP("Food",A2:B4,2,FALSE)': { reason: "FortuneSheet answers #NAME? for VLOOKUP with FALSE.", value: 300 },
+  '=IFERROR(B2/0,"oops")': { reason: 'FortuneSheet returns "DIV/0" instead of the fallback.', value: "oops" },
+  '=TEXT(B2,"0.00")': { reason: "FortuneSheet answers #ERROR! for TEXT with a plain number format.", value: "1200.00" },
+  "=ROW(B3)": { reason: "FortuneSheet answers #NAME? for ROW(ref).", value: 3 },
+  "=COLUMN(C1)": { reason: "FortuneSheet answers #N/A for COLUMN(ref).", value: 3 },
+};
+for (const [formula, { reason, value }] of Object.entries(FORTUNE_WRONG)) {
+  DIVERGENCES[`formula ${formula}`] = { reason, big: (reference) => withValue(reference, "8:3", value) };
+}
 
 describe("parity: FortuneSheet vs the big-sheet store", () => {
   for (const [name, steps] of Object.entries(SCENARIOS)) {
