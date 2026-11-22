@@ -67,7 +67,7 @@
       "manual calculation mode": "done"
     },
     "Data features": {
-      "data validation (dropdown, number, date, text length...)": "partial",
+      "data validation (dropdown, number, date, text length...)": "done",
       "conditional formatting (rules, data bars, colour scales)": "done",
       "hyperlinks": "done",
       "comments": "done",

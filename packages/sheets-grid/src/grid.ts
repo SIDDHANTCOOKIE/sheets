@@ -43,6 +43,8 @@ export interface GridCell {
   style?: GridCellStyle;
   /** The cell is a hyperlink (drawn blue and underlined). */
   link?: boolean;
+  /** A tick box: true = ticked. The cell's text is not drawn. */
+  checkbox?: boolean;
   /** Drawn as a rounded label instead of plain text: a person (with an initial) or a tag. */
   pill?: { label: string; bg: string; fg: string; avatar: boolean };
   /** The cell holds a number (shown to the right unless aligned otherwise, whatever its format looks like). */
@@ -109,6 +111,8 @@ export interface GridOptions {
   onCopy?(range: Range, cut: boolean): string | Promise<string | undefined> | undefined;
   /** Ctrl+V: the clipboard's text and the selection it goes into. */
   onPaste?(text: string, selection: Selection): void;
+  /** A tick box in a cell was clicked: flip it. */
+  onToggle?(cell: Cell): void;
   /** The fill handle (small square at the selection's corner) was dragged: fill `source` out to `extended` (which contains it). */
   onFillDrag?(source: Range, extended: Range): void;
   /** The selection's border was dragged: move the cells of `source` so that its top-left lands at `target`'s. */
@@ -530,7 +534,8 @@ export class Grid {
           ctx.fillStyle = style.bar.color;
           ctx.fillRect(left + 1, top + 3, Math.max(1, (w - 2) * style.bar.fraction), h - 6);
         }
-        if (cell?.pill) this.drawPill(cell, left, top, w, h);
+        if (cell?.checkbox !== undefined) this.drawCheckbox(cell.checkbox, left, top, w, h);
+        else if (cell?.pill) this.drawPill(cell, left, top, w, h);
         else if (cell?.text) this.drawText(cell, left, top, w, h, fonts(style));
         if (cell?.note) this.drawNoteMark(left, top, w);
         if (cell?.invalid) this.drawInvalidMark(left, top);
@@ -646,6 +651,32 @@ export class Grid {
       if (style?.underline || cell.link) ctx.fillRect(from, ty + lineH / 2 - 2, width, 1);
       if (style?.strike) ctx.fillRect(from, ty, width, 1);
     });
+    ctx.restore();
+  }
+
+  /** A 14px box, with a tick when checked, centred in the cell. */
+  private drawCheckbox(checked: boolean, left: number, top: number, w: number, h: number): void {
+    const { ctx } = this;
+    const size = Math.min(14, h - 6);
+    const x = Math.round(left + w / 2 - size / 2) + 0.5;
+    const y = Math.round(top + h / 2 - size / 2) + 0.5;
+    ctx.save();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = checked ? this.theme.selection : "#6b7280";
+    ctx.fillStyle = checked ? this.theme.selection : this.theme.background;
+    ctx.beginPath();
+    ctx.rect(x, y, size, size);
+    ctx.fill();
+    ctx.stroke();
+    if (checked) {
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x + size * 0.22, y + size * 0.52);
+      ctx.lineTo(x + size * 0.43, y + size * 0.73);
+      ctx.lineTo(x + size * 0.78, y + size * 0.28);
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
@@ -804,7 +835,8 @@ export class Grid {
       ctx.fillStyle = theme.background;
       const cell = this.data.cell(sel.active.row, sel.active.col);
       ctx.fillRect(active.left + 2, active.top + 2, active.width - 4, active.height - 4);
-      if (cell?.pill) this.drawPill(cell, active.left, active.top, active.width, active.height);
+      if (cell?.checkbox !== undefined) this.drawCheckbox(cell.checkbox, active.left, active.top, active.width, active.height);
+      else if (cell?.pill) this.drawPill(cell, active.left, active.top, active.width, active.height);
       else if (cell?.text) {
         this.drawText(cell, active.left, active.top, active.width, active.height, `${cell.style?.bold ? "700 " : ""}${Math.min(cell.style?.fontSize ?? 11, 24) * (96 / 72)}px ${theme.font}`);
       }
@@ -947,6 +979,16 @@ export class Grid {
     const hit = this.hit(event.clientX, event.clientY);
     // The scrollbars sit inside the scroller; ignore presses on them.
     if (hit.px >= this.width || hit.py >= this.height) return;
+    if (!hit.onRowHead && !hit.onColHead && this.options.onToggle) {
+      const here = this.data.cell(hit.row, hit.col);
+      if (here?.checkbox !== undefined) {
+        // The box sits in the middle of the cell; a click on it ticks it (and still selects the cell).
+        const box = this.cellRect({ row: hit.row, col: hit.col });
+        const mid = (box.x + box.width / 2) / this.zoom;
+        const midY = (box.y + box.height / 2) / this.zoom;
+        if (Math.abs(hit.px - mid) <= 9 && Math.abs(hit.py - midY) <= 9) this.options.onToggle({ row: hit.row, col: hit.col });
+      }
+    }
     const border = this.fillHandleHit(hit.px, hit.py) ? null : this.borderHit(hit.px, hit.py);
     if (border) {
       this.focus();

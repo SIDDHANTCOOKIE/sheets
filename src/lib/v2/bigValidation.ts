@@ -10,6 +10,7 @@ export const RULE_TYPES = [
   { value: "length", label: "Text length" },
   { value: "date", label: "Date (yyyy-mm-dd)" },
   { value: "textContains", label: "Text contains" },
+  { value: "checkbox", label: "Checkbox (click to tick)" },
 ] as const;
 
 export const OPERATORS: { value: Operator; label: string }[] = [
@@ -62,6 +63,7 @@ export function validate(rule: WorkbookValidation, text: string): string | null 
     const options = rule.options ?? [];
     return options.includes(value) ? null : `Pick one of: ${options.join(", ")}.`;
   }
+  if (rule.type === "checkbox") return /^(true|false)$/i.test(value) ? null : "A checkbox holds TRUE or FALSE.";
   if (rule.type === "textContains") {
     const needle = String(rule.params?.a ?? "");
     return value.toLowerCase().includes(needle.toLowerCase()) ? null : `The text must contain "${needle}".`;
@@ -102,6 +104,7 @@ export function buildRule(
     if (options.length === 0) return "Add at least one option, separated by commas.";
     return { type, options: [...new Set(options)] };
   }
+  if (type === "checkbox") return { type };
   if (type === "textContains") {
     if (input.a.trim() === "") return "Enter the text it must contain.";
     return { type, params: { a: input.a.trim() } };

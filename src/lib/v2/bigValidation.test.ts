@@ -60,3 +60,13 @@ describe("date and text-contains rules", () => {
     expect(buildRule("textContains", { list: "", op: "gt", a: " ", b: "" })).toMatch(/contain/);
   });
 });
+
+describe("checkbox rule", () => {
+  it("accepts TRUE and FALSE only", () => {
+    expect(validate({ type: "checkbox" }, "TRUE")).toBeNull();
+    expect(validate({ type: "checkbox" }, "false")).toBeNull();
+    expect(validate({ type: "checkbox" }, "")).toBeNull();
+    expect(validate({ type: "checkbox" }, "maybe")).toMatch(/TRUE or FALSE/);
+    expect(buildRule("checkbox", { list: "", op: "gt", a: "", b: "" })).toEqual({ type: "checkbox" });
+  });
+});

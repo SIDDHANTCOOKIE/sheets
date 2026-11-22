@@ -54,7 +54,9 @@ export function BigValidationDialog({
             ))}
           </select>
         </label>
-        {type === "textContains" ? (
+        {type === "checkbox" ? (
+          <p className="big-dialog-sub">The cells show a box that ticks and unticks when clicked (the value is TRUE or FALSE).</p>
+        ) : type === "textContains" ? (
           <label className="big-dialog-field">
             <span>The text must contain</span>
             <input value={a} onChange={(event) => setA(event.target.value)} autoFocus />

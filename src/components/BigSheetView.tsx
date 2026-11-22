@@ -126,12 +126,13 @@ function tabData(store: BigSheetStore, tab: number): GridData {
       if (!cell) return rule ? { text: "", style } : null;
       // A cell that no longer fits its validation rule (typed before the rule, pasted, filled) is marked.
       const invalid = !!cell.validation && cell.value !== undefined && validate(cell.validation, shown(cell)) !== null;
+      const checkbox = cell.validation?.type === "checkbox" ? cell.value === true || String(cell.value).toUpperCase() === "TRUE" : undefined;
       const pill = cell.person
         ? { label: cell.person.name || shown(cell) || shortNpub(cell.person.pubkey), ...colorFromString(cell.person.name || shown(cell) || cell.person.pubkey), avatar: true }
         : cell.tag
           ? { label: cell.tag, ...colorFromString(cell.tag), avatar: false }
           : undefined;
-      return { text: shown(cell), style, link: !!cell.link, note: !!cell.comment, invalid, numeric: typeof cell.value === "number", pill };
+      return { text: shown(cell), style, link: !!cell.link, note: !!cell.comment, invalid, numeric: typeof cell.value === "number", pill, checkbox };
     },
     ensure(first, end) {
       const info = store.tabs[tab];
@@ -378,6 +379,17 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
             });
             await refreshRef.current([written], true);
           })
+          .catch((error) => toast(error instanceof Error ? error.message : String(error), "error"));
+      },
+      onToggle: (cell) => {
+        if (!live.current.canEdit) return;
+        const tabNo = live.current.tab;
+        const current = store.cell(tabNo, cell.row, cell.col);
+        if (current?.validation?.type !== "checkbox") return;
+        const ticked = current.value === true || String(current.value).toUpperCase() === "TRUE";
+        store
+          .edit(tabNo, cell.row, cell.col, cell.row, cell.col, (before) => ({ ...(before ?? {}), value: !ticked }))
+          .then(() => refreshRef.current([{ tab: tabNo, r1: cell.row, c1: cell.col, r2: cell.row, c2: cell.col }]))
           .catch((error) => toast(error instanceof Error ? error.message : String(error), "error"));
       },
       onMoveDrag: (source, target) => {
