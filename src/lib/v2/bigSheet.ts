@@ -111,6 +111,8 @@ export class BigSheetStore {
   private cache = new Map<string, ChunkBody>();
   private loading = new Map<string, Promise<ChunkBody>>();
   private dirty = new Set<string>();
+  /** Chunks a structural edit has loaded and is still working on: the cache must not evict them (they are not dirty yet). */
+  private held = new Set<string>();
   private undoStack: UndoStep[] = [];
   /** Was the last undo() a structural one (rows, columns, tabs)? Then the caller has to rebuild what it shows. */
   structuralUndo = false;
@@ -455,7 +457,7 @@ export class BigSheetStore {
         this.loading.delete(key);
         for (const old of this.cache.keys()) {
           if (this.cache.size <= CACHE_CHUNKS) break;
-          if (!this.dirty.has(old) && old !== key) this.cache.delete(old);
+          if (!this.dirty.has(old) && !this.held.has(old) && old !== key) this.cache.delete(old);
         }
         this.onChunkLoaded?.(tab, chunk);
         this.emit();
@@ -720,8 +722,19 @@ export class BigSheetStore {
     if (edit.kind === "insert" && edit.axis === "row" && edit.count > MAX_INSERT_ROWS) {
       throw new Error(`Insert at most ${MAX_INSERT_ROWS.toLocaleString()} rows at once.`);
     }
-    // The first chunk carries the size and look, so it is always rewritten.
-    await this.load(tab, 0);
+    // The first chunk carries the size and look, so it is always rewritten. It stays in memory until the edit is done.
+    const headKey = this.key(tab, 0);
+    const heldBefore = this.held.has(headKey);
+    this.held.add(headKey);
+    try {
+      await this.load(tab, 0);
+      await this.applyEditHeld(tab, edit, info);
+    } finally {
+      if (!heldBefore) this.held.delete(headKey);
+    }
+  }
+
+  private async applyEditHeld(tab: number, edit: StructEdit, info: BigTab): Promise<void> {
     const finish = this.beginUndoableChange();
     // Rows and columns about to be deleted leave tombstones, so formulas that name them can still resolve.
     let tombs: Tombstones = {};
@@ -787,7 +800,13 @@ export class BigSheetStore {
         const covered = from <= entry.rowStart && to >= entry.rowStart + entry.rowCount;
         if (!covered || k === 0) partial.push(k);
       }
-      for (const k of partial) await this.load(tab, k);
+      const heldKeys = partial.map((k) => this.key(tab, k)).filter((key) => !this.held.has(key));
+      for (const key of heldKeys) this.held.add(key);
+      try {
+        for (const k of partial) await this.load(tab, k);
+      } finally {
+        for (const key of heldKeys) this.held.delete(key);
+      }
       const chunks = [...info.chunks];
       for (let k = 0; k < chunks.length; k++) {
         const entry = chunks[k];
@@ -1033,7 +1052,11 @@ export class BigSheetStore {
       const chunk = this.chunkFor(item.tab, item.row);
       const key = this.key(item.tab, chunk);
       const body = this.cache.get(key);
-      if (!body) continue; // edited chunks are pinned, so this does not happen
+      if (!body) {
+        // Not pinned any more (it was saved, then left the cache): fetch it, then write the change.
+        void this.load(item.tab, chunk).then(() => this.apply([item], side, markDirty), () => undefined);
+        continue;
+      }
       const cells = (body.cells ??= {});
       const cellKey = `${item.row - this.tabs[item.tab].chunks[chunk].rowStart}:${item.col}`;
       const value = item[side];
