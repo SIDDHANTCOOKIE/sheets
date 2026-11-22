@@ -326,12 +326,14 @@ export class BigSheetStore {
   /**
    * Stores a calculated value (a formula's new result). Not an undo step: it is recomputed from the
    * cells it reads, so undoing the edit that caused it recalculates it again.
+   * `transient` keeps the value in memory only (the chunk is not marked as changed), for results that
+   * are always recomputed when the sheet is opened, like NOW().
    */
-  async setDerived(tab: number, row: number, col: number, cell: WorkbookCell): Promise<void> {
+  async setDerived(tab: number, row: number, col: number, cell: WorkbookCell, transient = false): Promise<void> {
     await this.load(tab, this.chunkFor(tab, row));
     const before = this.rawCell(tab, row, col);
     if (JSON.stringify(before) === JSON.stringify(cell)) return;
-    this.apply([{ tab, row, col, before, after: cell }], "after");
+    this.apply([{ tab, row, col, before, after: cell }], "after", !transient);
   }
 
   /**
@@ -597,7 +599,7 @@ export class BigSheetStore {
   }
 
   /** Writes changes into their (pinned) chunks and marks them dirty. */
-  private apply(changes: Change[], side: "before" | "after"): void {
+  private apply(changes: Change[], side: "before" | "after", markDirty = true): void {
     for (const item of changes) {
       const chunk = this.chunkFor(item.tab, item.row);
       const key = this.key(item.tab, chunk);
@@ -612,7 +614,7 @@ export class BigSheetStore {
       tabInfo.rows = Math.max(tabInfo.rows, item.row + 1);
       tabInfo.cols = Math.max(tabInfo.cols, item.col + 1);
       if (tabInfo.colIds.length < tabInfo.cols) tabInfo.colIds = padCols(tabInfo.colIds, tabInfo.cols);
-      this.dirty.add(key);
+      if (markDirty) this.dirty.add(key);
     }
     this.emit();
   }

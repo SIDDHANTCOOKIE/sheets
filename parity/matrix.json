@@ -62,9 +62,9 @@
       "formula bar with token colours": "partial",
       "autocomplete and argument help": "done",
       "click/drag to insert references": "partial",
-      "recalculate formulas from the file on open": "todo",
-      "volatile functions (NOW, RAND...)": "todo",
-      "manual calculation mode": "todo"
+      "recalculate formulas from the file on open": "partial",
+      "volatile functions (NOW, RAND...)": "done",
+      "manual calculation mode": "done"
     },
     "Data features": {
       "data validation (dropdown, number, date, text length...)": "partial",

@@ -3821,3 +3821,7 @@ pre {
 .big-sheet-formula .ft-string { color: #16a34a; }
 .big-sheet-formula .ft-number { color: #0369a1; }
 .big-sheet-formula .ft-operator { opacity: 0.7; }
+
+.big-sheet-calc { padding: 2px 8px; border-radius: 6px; border: 1px solid rgba(128, 128, 128, 0.4); background: transparent; color: inherit; font: inherit; font-size: 11px; cursor: pointer; white-space: nowrap; }
+.big-sheet-calc.is-stale { border-color: #f76b15; }
+.big-sheet-calc:disabled { opacity: 0.5; cursor: default; }

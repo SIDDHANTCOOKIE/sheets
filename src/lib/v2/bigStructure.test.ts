@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { importXlsxToBlossom } from "./streamImport";
 import { BigSheetStore } from "./bigSheet";
-import { calculateTyped, FormulaIndex } from "./bigFormulas";
+import { calculateTyped, FormulaIndex, isVolatile, recalcVolatileInChunk, refreshDependents } from "./bigFormulas";
 import { editStructure, renameTabAndFormulas } from "./bigStructure";
 import { sortArea } from "./bigSort";
 import { BLANK, rowsToHide, scanColumn } from "./bigFilter";
@@ -455,5 +455,44 @@ describe("moving cells", () => {
     await store.setCell(0, 31, 2, "b");
     await moveCells(store, 0, { r1: 30, c1: 2, r2: 31, c2: 2 }, { r1: 31, c1: 2, r2: 32, c2: 2 });
     expect([30, 31, 32].map((r) => store.cell(0, r, 2)?.value ?? null)).toEqual([null, "a", "b"]);
+  }, 120_000);
+});
+
+describe("volatile formulas and full recalculation", () => {
+  it("recognises volatile functions", () => {
+    expect(isVolatile("NOW()")).toBe(true);
+    expect(isVolatile("A1+today( )")).toBe(true);
+    expect(isVolatile("IF(RAND()>0.5,1,0)")).toBe(true);
+    expect(isVolatile("SUM(A1:A5)")).toBe(false);
+    expect(isVolatile("NOWHERE(1)")).toBe(false);
+  });
+
+  it("refreshes NOW() when a saved sheet is read again, without marking it changed", async () => {
+    const { store, reopen } = await open("struct-volatile");
+    await store.load(0, 0);
+    await store.edit(0, 3, 3, 3, 3, () => ({ formula: "NOW()", value: 1 })); // an old, stale result
+    const again = await reopen();
+    await again.load(0, 0);
+    expect(again.cell(0, 3, 3)?.value).toBe(1);
+    expect(again.dirtyCount).toBe(0);
+    expect(await recalcVolatileInChunk(again, 0, 0)).toBe(1);
+    expect(Number(again.cell(0, 3, 3)?.value)).toBeGreaterThan(40_000); // a date serial
+    expect(again.dirtyCount).toBe(0); // opening alone leaves the sheet "saved"
+  }, 120_000);
+
+  it("recalculates every formula on request", async () => {
+    const { store } = await open("struct-recalc-all");
+    await store.load(0, 0);
+    const index = new FormulaIndex();
+    await store.setCell(0, 1, 0, "5");
+    // Two formulas whose stored results are stale; nothing changed that would refresh them.
+    await store.edit(0, 2, 0, 2, 0, () => ({ formula: "A2*2", value: 999 }));
+    await store.edit(0, 3, 0, 3, 0, () => ({ formula: "A3+1", value: 999 }));
+    await index.set(store, 0, 2, 0, "A2*2");
+    await index.set(store, 0, 3, 0, "A3+1");
+    const count = await refreshDependents(store, index, [], undefined, false, { all: true });
+    expect(count).toBeGreaterThanOrEqual(2);
+    expect(store.cell(0, 2, 0)?.value).toBe(10);
+    expect(store.cell(0, 3, 0)?.value).toBe(11); // chained: A3 = A2*2 + 1 = 11
   }, 120_000);
 });

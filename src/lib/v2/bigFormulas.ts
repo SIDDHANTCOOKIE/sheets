@@ -434,22 +434,34 @@ export async function refreshDependents(
   onProgress?: RefreshProgress,
   /** Set after a paste or fill: the formulas inside the changed areas are recalculated too. */
   recalcInside = false,
+  options: {
+    /** Results stay in memory only (see BigSheetStore.setDerived). */
+    transient?: boolean;
+    /** Recalculate every formula in the workbook, not only what depends on `changed`. */
+    all?: boolean;
+  } = {},
 ): Promise<number> {
   const inside: FormulaEntry[] = [];
   for (const area of changed) inside.push(...(await index.syncArea(store, area, recalcInside)));
   await index.ensureScanned(store, onProgress);
-  const { order, cyclic } = index.affected(store, changed, recalcInside ? inside : []);
+  const { order, cyclic } = index.affected(store, changed, options.all ? index.all() : recalcInside ? inside : []);
   const write = async (entry: { tab: number; row: number; col: number }, result: FormulaResult) => {
     await store.load(entry.tab, store.chunkFor(entry.tab, entry.row));
     const current = store.cell(entry.tab, entry.row, entry.col) ?? {};
     const { type: _type, display: _display, ...rest } = current;
     void _type;
     void _display;
-    await store.setDerived(entry.tab, entry.row, entry.col, {
-      ...rest,
-      value: result.value,
-      ...(result.error ? { type: "error" as const } : {}),
-    });
+    await store.setDerived(
+      entry.tab,
+      entry.row,
+      entry.col,
+      {
+        ...rest,
+        value: result.value,
+        ...(result.error ? { type: "error" as const } : {}),
+      },
+      options.transient,
+    );
   };
   const breathe = breather();
   for (const entry of cyclic) await write(entry, { value: "#CIRC!", error: true });
@@ -460,4 +472,30 @@ export async function refreshDependents(
     await breathe();
   }
   return order.length + cyclic.length;
+}
+
+/** Functions whose result changes every time (Excel recalculates them whenever a workbook is opened). */
+const VOLATILE = /\b(?:NOW|TODAY|RAND|RANDBETWEEN|RANDARRAY)\s*\(/i;
+export const isVolatile = (formula: string): boolean => VOLATILE.test(formula);
+
+/**
+ * Gives the volatile formulas (NOW, TODAY, RAND...) of a loaded chunk fresh results, kept in memory only
+ * so that just opening a sheet does not make it "changed". Formulas that read them are refreshed the
+ * next time something is edited. Returns how many were recalculated.
+ */
+export async function recalcVolatileInChunk(store: BigSheetStore, tab: number, chunk: number, limit = 5000): Promise<number> {
+  const found: [number, number, string][] = [];
+  for (const [row, col, cell] of store.cellsOfChunk(tab, chunk)) {
+    if (cell.formula && isVolatile(cell.formula)) found.push([row, col, cell.formula]);
+    if (found.length >= limit) break;
+  }
+  for (const [row, col, formula] of found) {
+    const result = await calculateTyped(store, tab, row, col, formula);
+    const current = store.cell(tab, row, col) ?? {};
+    const { type: _type, display: _display, ...rest } = current;
+    void _type;
+    void _display;
+    await store.setDerived(tab, row, col, { ...rest, value: result.value, ...(result.error ? { type: "error" as const } : {}) }, true);
+  }
+  return found.length;
 }

@@ -8,7 +8,7 @@ import { BIG_SHEET_EDITING } from "../lib/constants";
 import { BigSheetStore } from "../lib/v2/bigSheet";
 import { sortArea } from "../lib/v2/bigSort";
 import { editStructure, renameTabAndFormulas } from "../lib/v2/bigStructure";
-import { calculateTyped, FormulaIndex, pointRect, refreshDependents, type ChangedRect } from "../lib/v2/bigFormulas";
+import { calculateTyped, FormulaIndex, pointRect, recalcVolatileInChunk, refreshDependents, type ChangedRect } from "../lib/v2/bigFormulas";
 import {
   copyBlock,
   copyBlockNow,
@@ -129,6 +129,11 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   const [editing, setEditing] = useState<{ row: number; col: number; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [validating, setValidating] = useState(false);
+  /** Manual calculation: edits do not refresh other formulas until F9 (or the Recalculate button). */
+  const [manualCalc, setManualCalc] = useState(false);
+  const [stale, setStale] = useState(false);
+  const manualRef = useRef(false);
+  manualRef.current = manualCalc;
   const [filtering, setFiltering] = useState(false);
   const [sortDialog, setSortDialog] = useState(false);
   /** Right-click menu of a sheet tab (page position of its bottom-left, which tab). */
@@ -178,8 +183,12 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   // Refreshes run one after another, so two quick edits never recalculate the same cells at once.
   const refreshQueue = useRef<Promise<void>>(Promise.resolve());
   const refresh = useCallback(
-    (areas: ChangedRect[], recalcInside = false): Promise<void> => {
+    (areas: ChangedRect[], recalcInside = false, force = false, all = false): Promise<void> => {
       const job = refreshQueue.current.then(async () => {
+        if (manualRef.current && !force) {
+          setStale(true);
+          return;
+        }
         try {
           const count = await refreshDependents(
             store,
@@ -194,7 +203,9 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
                     : null,
               ),
             recalcInside,
+            { all },
           );
+          if (all) setStale(false);
           if (count > 0) setVersion((n) => n + 1);
         } catch (error) {
           toast(error instanceof Error ? error.message : "Couldn't update formulas.", "error");
@@ -211,8 +222,14 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   refreshRef.current = refresh;
   useEffect(() => {
     if (!ready) return;
-    store.onChunkLoaded = (tabNo, chunk) => void index.scanChunk(store, tabNo, chunk);
-    for (const [tabNo, chunk] of store.loadedChunks()) void index.scanChunk(store, tabNo, chunk);
+    // Each chunk is read for formulas as it arrives; NOW(), RAND() and friends get fresh values right away.
+    const learn = (tabNo: number, chunk: number) =>
+      void index
+        .scanChunk(store, tabNo, chunk)
+        .then(() => recalcVolatileInChunk(store, tabNo, chunk))
+        .catch(() => {});
+    store.onChunkLoaded = learn;
+    for (const [tabNo, chunk] of store.loadedChunks()) learn(tabNo, chunk);
     return () => {
       store.onChunkLoaded = undefined;
     };
@@ -906,6 +923,11 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
         if (editing) return;
         const mod = event.ctrlKey || event.metaKey;
         const key = event.key.toLowerCase();
+        if (event.key === "F9") {
+          event.preventDefault();
+          void refresh([], false, true, true);
+          return;
+        }
         if (mod && !event.shiftKey && !event.altKey && (key === "f" || key === "h")) {
           event.preventDefault();
           setFinding({ replace: key === "h" });
@@ -1005,6 +1027,19 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
               ))
             : shown(selectedCell)}
         </span>
+        <button
+          type="button"
+          className="big-sheet-calc"
+          title={manualCalc ? "Manual calculation: formulas update only when you recalculate (F9). Click to switch to automatic." : "Automatic calculation. Click to switch to manual."}
+          onClick={() => setManualCalc((on) => !on)}
+        >
+          {manualCalc ? "Calc: manual" : "Calc: auto"}
+        </button>
+        {manualCalc && (
+          <button type="button" className="big-sheet-calc is-stale" disabled={!!calculating} onClick={() => void refresh([], false, true, true)} title="Recalculate every formula (F9)">
+            {stale ? "Recalculate (F9) •" : "Recalculate (F9)"}
+          </button>
+        )}
         <input
           className="big-sheet-goto"
           placeholder="Go to row"
