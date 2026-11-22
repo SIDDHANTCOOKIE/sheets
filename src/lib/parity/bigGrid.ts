@@ -12,7 +12,7 @@ import { fakeBlossom, localSigner } from "../v2/testUtils";
 import { createWorkerHandler } from "../xlsxStream/workerCore";
 import type { WorkerLike } from "../xlsxStream/client";
 import type { MainToWorker } from "../xlsxStream/protocol";
-import type { Step } from "./fortuneHeadless";
+import type { Step } from "./step";
 
 function inProcessWorker(): WorkerLike {
   const worker: WorkerLike = {

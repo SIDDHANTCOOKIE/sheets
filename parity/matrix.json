@@ -82,7 +82,7 @@
       "xlsx export (streaming)": "done",
       "live collaboration": "todo",
       "automated parity test against FortuneSheet": "partial",
-      "FortuneSheet removed": "todo",
+      "FortuneSheet removed": "done",
       "packages published": "todo"
     }
   }

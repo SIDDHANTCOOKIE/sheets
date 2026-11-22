@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { nip19, type Event } from "nostr-tools";
-import type { Sheet } from "@fortune-sheet/core";
+import type { Sheet } from "../lib/legacy/fortuneFormat";
 import {
   CLIENT_TAG,
   KIND_BLOSSOM_SERVERS,
