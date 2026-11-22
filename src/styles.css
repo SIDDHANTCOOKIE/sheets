@@ -3726,7 +3726,7 @@ pre {
 }
 
 /* Large sheet mode (BigSheetView): looks like the main editor's grid (white sheet, grey headers). */
-.big-sheet { flex: 1; min-height: 0; min-width: 0; width: 100%; overflow: hidden; display: flex; flex-direction: column; outline: none; background: var(--bg); }
+.big-sheet { flex: 1; min-height: 0; min-width: 0; width: 100%; overflow: hidden; position: relative; display: flex; flex-direction: column; outline: none; background: var(--bg); }
 .big-sheet-bar { flex: none; display: flex; align-items: center; height: 30px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .big-sheet-ref { width: 90px; padding: 0 10px; font-size: 12px; font-variant-numeric: tabular-nums; border-right: 1px solid var(--line); line-height: 30px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .big-sheet-fx { padding: 0 10px; color: var(--muted); font-style: italic; font-family: Georgia, serif; border-right: 1px solid var(--line); line-height: 30px; }
@@ -3774,3 +3774,11 @@ pre {
 .big-menu button { text-align: left; padding: 7px 10px; border: 0; border-radius: 5px; background: transparent; color: inherit; font: inherit; font-size: 13px; cursor: pointer; }
 .big-menu button:hover:not(:disabled) { background: rgba(128, 128, 128, 0.2); }
 .big-menu button:disabled { opacity: 0.4; cursor: default; }
+
+.big-find { position: absolute; z-index: 20; top: 104px; right: 24px; display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 8px; background: var(--surface, #fff); color: inherit; border: 1px solid rgba(128, 128, 128, 0.35); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25); font-size: 12px; }
+.big-find-row { display: flex; align-items: center; gap: 6px; }
+.big-find-input { width: 220px; padding: 5px 8px; border-radius: 5px; border: 1px solid rgba(128, 128, 128, 0.45); background: transparent; color: inherit; font: inherit; }
+.big-find-count { min-width: 92px; opacity: 0.75; display: inline-flex; align-items: center; gap: 4px; }
+.big-find-btn { display: inline-flex; padding: 4px; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
+.big-find-btn:hover { background: rgba(128, 128, 128, 0.2); }
+.big-find-opt { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }

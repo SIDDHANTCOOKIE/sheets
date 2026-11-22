@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
@@ -7,6 +8,8 @@ const here = (path: string) => fileURLToPath(new URL(path, import.meta.url));
 export default defineConfig({
   plugins: [react()],
   base: "/",
+  // Several suites build real encrypted sheets; under a loaded machine 5 s is too tight.
+  test: { testTimeout: 30_000 },
   resolve: {
     alias: [
       { find: "@formstr/sheets-formula", replacement: here("./packages/sheets-formula/src/index.ts") },

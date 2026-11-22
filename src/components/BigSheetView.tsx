@@ -6,6 +6,8 @@ import { addBorder, columnName, Grid, type BorderType, type GridData, type Selec
 import { AlertTriangle, Loader2, Save } from "lucide-react";
 import { BIG_SHEET_EDITING } from "../lib/constants";
 import { BigSheetStore } from "../lib/v2/bigSheet";
+import { sortArea } from "../lib/v2/bigSort";
+import { editStructure } from "../lib/v2/bigStructure";
 import { calculateTyped, FormulaIndex, pointRect, refreshDependents, type ChangedRect } from "../lib/v2/bigFormulas";
 import {
   copyBlock,
@@ -22,6 +24,7 @@ import { uploadProgress } from "../lib/v2/progress";
 import type { LibraryEntry } from "../lib/types";
 import type { WorkbookCell } from "../lib/workbook";
 import { cellDisplay } from "../lib/workbook/format";
+import { BigFindBar } from "./BigFindBar";
 import { BigSheetToolbar, shiftDecimals, type StylePatch } from "./BigSheetToolbar";
 import { useLibrary } from "../providers/LibraryProvider";
 import { useToast } from "../providers/ToastProvider";
@@ -94,6 +97,8 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   const [painting, setPainting] = useState<WorkbookCell["style"] | null>(null);
   const [editing, setEditing] = useState<{ row: number; col: number; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
+  /** The find bar (Ctrl+F), with the replace row when opened by Ctrl+H. */
+  const [finding, setFinding] = useState<{ replace: boolean } | null>(null);
   /** Right-click menu: where it is on the page. */
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   /** Progress of a formula that has to read several chunks, e.g. =SUM(A:A). */
@@ -372,6 +377,66 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
       .then(() => gridRef.current && applyLayout(gridRef.current, store, tab))
       .catch(() => {});
   };
+  /**
+   * Inserts or deletes the selected rows/columns (as many as are selected). Formulas follow; it can't be
+   * undone, so deleting asks first. Runs after any formula refresh that is still going.
+   */
+  const structure = (kind: "insert" | "delete", axis: "row" | "col", where: "before" | "after" = "before") => {
+    if (!canEdit || !range) return;
+    const first = axis === "row" ? range.r1 : range.c1;
+    const last = axis === "row" ? range.r2 : range.c2;
+    const count = last - first + 1;
+    const word = axis === "row" ? "row" : "column";
+    if (
+      kind === "delete" &&
+      !window.confirm(`Delete ${count.toLocaleString()} ${word}${count === 1 ? "" : "s"}? This can't be undone.`)
+    ) {
+      return;
+    }
+    const at = kind === "insert" && where === "after" ? last + 1 : first;
+    const tabNo = tab;
+    const job = refreshQueue.current.then(async () => {
+      try {
+        setCalculating("Updating…");
+        await editStructure(store, index, tabNo, { kind, axis, index: at, count }, (done, total, phase) =>
+          setCalculating(phase === "scan" ? `Looking for formulas… ${done} of ${total} parts` : `Updating formulas… ${done.toLocaleString()} of ${total.toLocaleString()}`),
+        );
+        const grid = gridRef.current;
+        if (grid) {
+          applyLayout(grid, store, tabNo);
+          const rows = store.tabs[tabNo].rows;
+          const cols = store.tabs[tabNo].cols;
+          const row = axis === "row" ? Math.min(at, rows - 1) : (active?.row ?? 0);
+          const col = axis === "col" ? Math.min(at, cols - 1) : (active?.col ?? 0);
+          const area =
+            kind === "insert"
+              ? axis === "row"
+                ? { r1: at, r2: at + count - 1, c1: range.c1, c2: range.c2 }
+                : { r1: range.r1, r2: range.r2, c1: at, c2: at + count - 1 }
+              : { r1: row, r2: row, c1: col, c2: col };
+          grid.select({ ranges: [area], active: { row: area.r1, col: area.c1 }, anchor: { row: area.r1, col: area.c1 } }, false);
+        }
+        setVersion((n) => n + 1);
+      } catch (error) {
+        toast(error instanceof Error ? error.message : "Couldn't change the sheet.", "error");
+      } finally {
+        setCalculating(null);
+      }
+    });
+    refreshQueue.current = job;
+  };
+
+  /** Sorts the selected rows by the column of the active cell. */
+  const sort = (descending: boolean) => {
+    if (!canEdit || !range || !active) return;
+    const tabNo = tab;
+    sortArea(store, tabNo, range, Math.min(Math.max(active.col, range.c1), range.c2), descending, store.tabs[tabNo].layout.merges ?? [])
+      .then(async (moved) => {
+        if (moved) await refresh([{ tab: tabNo, r1: range.r1, c1: range.c1, r2: range.r2, c2: range.c2 }]);
+      })
+      .catch((error) => toast(error instanceof Error ? error.message : "Couldn't sort.", "error"));
+  };
+
   /** Asks for a size and gives it to every selected row (or column). */
   const askSize = (axis: "rows" | "columns") => {
     if (!canEdit || !range) return;
@@ -526,6 +591,32 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
     );
   }
 
+  /** Count / sum / average of the numbers in the selection (only the parts already loaded, up to 50,000 cells). */
+  const totals = (() => {
+    if (!range || (range.r1 === range.r2 && range.c1 === range.c2)) return "";
+    const last = Math.min(range.r2, range.r1 + 49_999);
+    let count = 0;
+    let sum = 0;
+    let filled = 0;
+    let cells = 0;
+    outer: for (let r = range.r1; r <= last; r++) {
+      if (!store.isLoaded(tab, r)) continue;
+      for (let c = range.c1; c <= range.c2; c++) {
+        if (++cells > 50_000) break outer;
+        const cell = store.cell(tab, r, c);
+        if (cell?.value === undefined || cell.value === "") continue;
+        filled++;
+        if (typeof cell.value === "number" && Number.isFinite(cell.value)) {
+          count++;
+          sum += cell.value;
+        }
+      }
+    }
+    if (filled === 0) return "";
+    const fmt = (n: number) => n.toLocaleString(undefined, { maximumFractionDigits: 4 });
+    return count > 0 ? `Count ${filled.toLocaleString()} · Sum ${fmt(sum)} · Avg ${fmt(sum / count)}` : `Count ${filled.toLocaleString()}`;
+  })();
+
   const selectedCell = active ? store.cell(tab, active.row, active.col) : undefined;
   const rows = info.rows;
   const grid = gridRef.current;
@@ -539,6 +630,11 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
         if (editing) return;
         const mod = event.ctrlKey || event.metaKey;
         const key = event.key.toLowerCase();
+        if (mod && !event.shiftKey && !event.altKey && (key === "f" || key === "h")) {
+          event.preventDefault();
+          setFinding({ replace: key === "h" });
+          return;
+        }
         if (mod && canEdit && (key === "z" || key === "y")) {
           event.preventDefault();
           if (key === "y" || event.shiftKey) redo();
@@ -592,7 +688,7 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           }}
         />
         <span className="big-sheet-note">
-          {calculating ?? `${rows.toLocaleString()} rows · large sheet mode${canEdit ? "" : " · read-only"}`}
+          {calculating ?? (totals || `${rows.toLocaleString()} rows · large sheet mode${canEdit ? "" : " · read-only"}`)}
         </span>
         {canEdit && (
           <button type="button" className="btn btn-primary btn-sm" disabled={saving || store.dirtyCount === 0} onClick={() => void save()}>
@@ -601,6 +697,26 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           </button>
         )}
       </div>
+      {finding && (
+        <BigFindBar
+          key={finding.replace ? "replace" : "find"}
+          store={store}
+          tab={tab}
+          canEdit={canEdit}
+          withReplace={finding.replace}
+          onGo={(match) => {
+            const grid = gridRef.current;
+            if (!grid) return;
+            const at = { row: match.row, col: match.col };
+            grid.select({ ranges: [{ r1: at.row, c1: at.col, r2: at.row, c2: at.col }], active: at, anchor: at });
+          }}
+          onReplaced={(changed) => void refresh(changed.map((m) => pointRect({ tab, row: m.row, col: m.col })))}
+          onClose={() => {
+            setFinding(null);
+            gridRef.current?.focus();
+          }}
+        />
+      )}
       <div className="big-sheet-scroll big-sheet-canvas">
         <div ref={hostRef} className="big-sheet-host" />
         {editing && editRect && (
@@ -638,6 +754,14 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
               [
                 [`Hide row${range.r2 > range.r1 ? "s" : ""} ${range.r1 + 1}${range.r2 > range.r1 ? "–" + (range.r2 + 1) : ""}`, () => setHidden("rows", true), true],
                 [`Hide column${range.c2 > range.c1 ? "s" : ""} ${columnName(range.c1)}${range.c2 > range.c1 ? "–" + columnName(range.c2) : ""}`, () => setHidden("columns", true), true],
+                [`Insert ${range.r2 - range.r1 + 1 > 1 ? range.r2 - range.r1 + 1 + " rows" : "row"} above`, () => structure("insert", "row", "before"), true],
+                [`Insert ${range.r2 - range.r1 + 1 > 1 ? range.r2 - range.r1 + 1 + " rows" : "row"} below`, () => structure("insert", "row", "after"), true],
+                [`Delete row${range.r2 > range.r1 ? "s" : ""}`, () => structure("delete", "row"), true],
+                [`Insert ${range.c2 - range.c1 + 1 > 1 ? range.c2 - range.c1 + 1 + " columns" : "column"} left`, () => structure("insert", "col", "before"), true],
+                [`Insert ${range.c2 - range.c1 + 1 > 1 ? range.c2 - range.c1 + 1 + " columns" : "column"} right`, () => structure("insert", "col", "after"), true],
+                [`Delete column${range.c2 > range.c1 ? "s" : ""}`, () => structure("delete", "col"), true],
+                [`Sort rows A → Z by column ${columnName(Math.min(Math.max(active?.col ?? range.c1, range.c1), range.c2))}`, () => sort(false), range.r2 > range.r1],
+                [`Sort rows Z → A by column ${columnName(Math.min(Math.max(active?.col ?? range.c1, range.c1), range.c2))}`, () => sort(true), range.r2 > range.r1],
                 ["Set row height…", () => askSize("rows"), true],
                 ["Set column width…", () => askSize("columns"), true],
                 ["Show hidden rows here", () => setHidden("rows", false), hiddenNear("rows")],

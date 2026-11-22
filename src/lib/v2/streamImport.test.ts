@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { importXlsxToBlossom } from "./streamImport";
 import { BigSheetStore } from "./bigSheet";
 import { calculateTyped, FormulaIndex, pointRect, refreshDependents } from "./bigFormulas";
+import { findCells, replaceCells } from "./bigFind";
 import { copyBlock, fillArea, fromTsv, pasteBlock, pasteText } from "./bigClipboard";
 import { downloadTabBody } from "./blossom";
 import { assertOpenable, parseRootV2, SheetTooLargeToOpenError, type ChunkEntry } from "./root";
@@ -229,6 +230,39 @@ describe("importXlsxToBlossom", () => {
     await third.open();
     expect(third.tabs[1].layout.frozen).toBeUndefined();
     expect(third.tabs[1].layout.columnWidths).toEqual({ 2: 220 });
+  }, 60_000);
+
+  it("finds and replaces text across every chunk of a big sheet", async () => {
+    const bytes = await buildLargeXlsx({ tabs: 1, rows: 3000, cols: 8, sharedStrings: false });
+    const fake = fakeBlossom();
+    const signer = localSigner();
+    const servers = ["https://big-find.test"];
+    const env = { fetch: fake.fetch, sleep: async () => {} };
+    const { root } = await importXlsxToBlossom(new Blob([bytes as BlobPart]), {
+      title: "Find", servers, signer, env, createWorker: inProcessWorker, start: START,
+    });
+    const store = new BigSheetStore(root, servers, env);
+    await store.open();
+    expect(store.tabs[0].chunks.length).toBeGreaterThan(2);
+    const lastRow = store.tabs[0].rows - 1;
+    await store.load(0, store.chunkFor(0, lastRow));
+    await store.setCell(0, lastRow, 2, "needle one");
+    await store.load(0, 0);
+    await store.setCell(0, 3, 1, "Needle two");
+
+    const progress: number[] = [];
+    const found = await findCells(store, 0, "needle", {}, (done) => progress.push(done));
+    expect(found.matches).toEqual([{ row: 3, col: 1 }, { row: lastRow, col: 2 }]);
+    expect(progress.at(-1)).toBe(store.tabs[0].chunks.length);
+    expect((await findCells(store, 0, "needle", { matchCase: true })).matches).toEqual([{ row: lastRow, col: 2 }]);
+    expect((await findCells(store, 0, "needle one", { wholeCell: true })).matches).toHaveLength(1);
+    expect((await findCells(store, 0, "needle", { wholeCell: true })).matches).toHaveLength(0);
+
+    const changed = await replaceCells(store, 0, found.matches, "needle", "pin");
+    expect(changed).toHaveLength(2);
+    expect(store.cell(0, 3, 1)?.value).toBe("pin two");
+    expect(store.cell(0, lastRow, 2)?.value).toBe("pin one");
+    expect((await findCells(store, 0, "needle")).matches).toHaveLength(0);
   }, 60_000);
 
   it("keeps formulas, their results and errors through save and reload, and refreshes them after reload", async () => {

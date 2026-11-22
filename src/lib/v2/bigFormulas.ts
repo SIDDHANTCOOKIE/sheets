@@ -196,6 +196,18 @@ export class FormulaIndex {
     return this.entries.size;
   }
 
+  /** Every formula the index knows. */
+  all(): FormulaEntry[] {
+    return [...this.entries.values()];
+  }
+
+  /** Forgets every formula (the chunks stay marked as scanned). Used after rows/columns moved, before re-adding them. */
+  reset(): void {
+    this.entries.clear();
+    this.byPoint.clear();
+    this.wide.clear();
+  }
+
   has(tab: number, row: number, col: number): boolean {
     return this.entries.has(addressKey(tab, row, col));
   }

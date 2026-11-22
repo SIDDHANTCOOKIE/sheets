@@ -9,10 +9,11 @@
 // are not recalculated: an edit stores the typed value.
 import type { WorkbookCell } from "../workbook";
 import { encryptFrame, uploadStaged, type BlossomEnv, type StagedBlob, type UploadOptions } from "./blossom";
-import { concatRuns, legacyRows, padCols, rowCountOf, type RowRun } from "../workbook/ids";
+import { concatRuns, deleteRuns, insertRuns, legacyRows, mintRows, newDeviceTag, padCols, padRuns, rowCountOf, type RowRun } from "../workbook/ids";
 import { readChunk, writeChunk, type ChunkBody as StoredChunkBody } from "./chunks";
 import { frame } from "./codec";
 import { downloadTabBody } from "./blossom";
+import { editLayout, type StructEdit } from "./layoutEdit";
 import { FRAME_TYPE_TAB_INDEX, resolveChunks, type ChunkEntry, type SheetRootV2 } from "./root";
 
 /** A decoded chunk: cells are positional ("<row - chunk start>:<column index>"), rows are its row ids. */
@@ -28,6 +29,8 @@ interface ChunkBody {
 const CACHE_CHUNKS = 6;
 /** Largest selection one toolbar action may change (it may have to download several chunks). */
 export const MAX_EDIT_CELLS = 200_000;
+const MAX_COLUMNS = 16_384;
+const MAX_INSERT_ROWS = 100_000;
 const UNDO_STEPS = 100;
 
 export interface CellAddress {
@@ -82,6 +85,9 @@ export class BigSheetStore {
   private listeners = new Set<() => void>();
   /** Called each time a chunk finishes loading (the formula index learns its formulas here). */
   onChunkLoaded?: (tab: number, chunk: number) => void;
+  /** Ids for rows and columns this device adds. */
+  private readonly idTag = newDeviceTag();
+  private idCounter = 0;
 
   constructor(root: SheetRootV2, servers: string[], env: BlossomEnv = {}) {
     this.root = root;
@@ -157,7 +163,9 @@ export class BigSheetStore {
     if (!pending) {
       const entry = this.tabs[tab].chunks[chunk];
       pending = (this.fetchBody(entry.ref, this.root.servers) as Promise<StoredChunkBody>).then((stored) => {
-        const read = readChunk(stored, entry.rowStart, entry.rowCount, this.root.tabs[tab].cols);
+        // The current column ids (they change when columns are inserted or deleted).
+        const colIds = this.tabs[tab].colIds.length > 0 ? this.tabs[tab].colIds : this.root.tabs[tab].cols;
+        const read = readChunk(stored, entry.rowStart, entry.rowCount, colIds);
         const body: ChunkBody = { ...read.layout, rows: read.rows, cells: read.cells };
         this.cache.set(key, body);
         this.loading.delete(key);
@@ -315,6 +323,145 @@ export class BigSheetStore {
     this.emit();
   }
 
+  // --- inserting and deleting rows and columns ------------------------------------------------
+
+  /**
+   * Inserts or deletes rows or columns: moves the cells, the ids and the tab's saved look (sizes,
+   * merges, borders). Formulas are NOT rewritten here (see bigStructure.ts). Not undoable: the undo
+   * history is cleared because it names cells by position.
+   */
+  async applyEdit(tab: number, edit: StructEdit): Promise<void> {
+    if (edit.count <= 0) return;
+    const info = this.tabs[tab];
+    const total = edit.axis === "row" ? info.rows : info.cols;
+    if (edit.kind === "delete" && edit.index + edit.count > total) edit = { ...edit, count: total - edit.index };
+    if (edit.count <= 0) return;
+    if (edit.kind === "delete" && edit.count >= total) {
+      throw new Error(`A sheet needs at least one ${edit.axis === "row" ? "row" : "column"}.`);
+    }
+    if (edit.kind === "insert" && edit.axis === "col" && info.cols + edit.count > MAX_COLUMNS) {
+      throw new Error(`A sheet has at most ${MAX_COLUMNS.toLocaleString()} columns.`);
+    }
+    if (edit.kind === "insert" && edit.axis === "row" && edit.count > MAX_INSERT_ROWS) {
+      throw new Error(`Insert at most ${MAX_INSERT_ROWS.toLocaleString()} rows at once.`);
+    }
+    // The first chunk carries the size and look, so it is always rewritten.
+    await this.load(tab, 0);
+    if (edit.axis === "row") await (edit.kind === "insert" ? this.insertRows(tab, edit) : this.deleteRows(tab, edit));
+    else if (edit.kind === "insert") this.insertCols(tab, edit);
+    else this.deleteCols(tab, edit);
+
+    const head = this.cache.get(this.key(tab, 0)) as ChunkBody;
+    info.layout = editLayout(info.layout, edit);
+    for (const key of LAYOUT_KEYS) {
+      const value = info.layout[key];
+      if (value === undefined) delete head[key];
+      else head[key] = value;
+    }
+    this.dirty.add(this.key(tab, 0));
+    this.undoStack = [];
+    this.redoStack = [];
+    this.emit();
+  }
+
+  private async insertRows(tab: number, edit: StructEdit): Promise<void> {
+    const info = this.tabs[tab];
+    const at = Math.min(edit.index, info.rows);
+    const last = info.chunks[info.chunks.length - 1];
+    const coverage = last.rowStart + last.rowCount;
+    if (at < coverage) {
+      const k = this.chunkFor(tab, at);
+      const body = await this.load(tab, k);
+      const entry = info.chunks[k];
+      const local = at - entry.rowStart;
+      body.cells = moveCells(body.cells, (row, col) => [row >= local ? row + edit.count : row, col]);
+      body.rows = insertRuns(padRuns(body.rows ?? [], entry.rowCount), local, mintRows(this.idTag, this.idCounter, edit.count));
+      this.idCounter += edit.count;
+      info.chunks[k] = { ...entry, rowCount: entry.rowCount + edit.count };
+      for (let j = k + 1; j < info.chunks.length; j++) info.chunks[j] = { ...info.chunks[j], rowStart: info.chunks[j].rowStart + edit.count };
+      this.dirty.add(this.key(tab, k));
+    }
+    info.rows += edit.count;
+  }
+
+  private async deleteRows(tab: number, edit: StructEdit): Promise<void> {
+    const info = this.tabs[tab];
+    const last = info.chunks[info.chunks.length - 1];
+    const coverage = last.rowStart + last.rowCount;
+    const from = edit.index;
+    const to = Math.min(edit.index + edit.count, coverage); // rows [from, to) live in chunks
+    let removed = 0;
+    if (from < to) {
+      const first = this.chunkFor(tab, from);
+      const lastChunk = this.chunkFor(tab, to - 1);
+      // Load what must be edited before changing anything, so a failed download leaves the sheet alone.
+      const partial: number[] = [];
+      for (let k = first; k <= lastChunk; k++) {
+        const entry = info.chunks[k];
+        const covered = from <= entry.rowStart && to >= entry.rowStart + entry.rowCount;
+        if (!covered || k === 0) partial.push(k);
+      }
+      for (const k of partial) await this.load(tab, k);
+      const chunks = [...info.chunks];
+      for (let k = 0; k < chunks.length; k++) {
+        const entry = chunks[k];
+        const start = entry.rowStart;
+        const end = start + entry.rowCount;
+        const lo = Math.max(from, start);
+        const hi = Math.min(to, end);
+        if (hi > lo && entry.rowCount > 0) {
+          const gone = hi - lo;
+          if (partial.includes(k)) {
+            const body = this.cache.get(this.key(tab, k)) as ChunkBody;
+            const a = lo - start;
+            const b = hi - start;
+            body.cells = moveCells(body.cells, (row, col) => (row >= a && row < b ? null : [row >= b ? row - gone : row, col]));
+            body.rows = deleteRuns(padRuns(body.rows ?? [], entry.rowCount), a, gone);
+            this.dirty.add(this.key(tab, k));
+          } else {
+            // Every row of the chunk is deleted: it is simply emptied (nothing to download).
+            this.cache.delete(this.key(tab, k));
+            this.dirty.delete(this.key(tab, k));
+          }
+          chunks[k] = { ...entry, rowStart: start - removed, rowCount: entry.rowCount - gone, cells: partial.includes(k) ? entry.cells : 0 };
+          removed += gone;
+        } else {
+          chunks[k] = { ...entry, rowStart: start - removed };
+        }
+      }
+      info.chunks = chunks;
+    }
+    info.rows -= edit.count;
+  }
+
+  private insertCols(tab: number, edit: StructEdit): void {
+    const info = this.tabs[tab];
+    const at = Math.min(edit.index, info.cols);
+    const ids = padCols(info.colIds, info.cols);
+    const fresh = Array.from({ length: edit.count }, () => `x${this.idTag}${this.idCounter++}`);
+    info.colIds = [...ids.slice(0, at), ...fresh, ...ids.slice(at)];
+    info.cols += edit.count;
+    this.mapLoadedCells(tab, (row, col) => [row, col >= at ? col + edit.count : col]);
+  }
+
+  private deleteCols(tab: number, edit: StructEdit): void {
+    const info = this.tabs[tab];
+    const ids = padCols(info.colIds, info.cols);
+    const to = edit.index + edit.count;
+    info.colIds = [...ids.slice(0, edit.index), ...ids.slice(to)];
+    info.cols -= edit.count;
+    this.mapLoadedCells(tab, (row, col) => (col >= edit.index && col < to ? null : [row, col >= to ? col - edit.count : col]));
+    // Chunks written before may still hold the deleted columns; they are ignored when read (their ids are gone).
+  }
+
+  /** Moves the cells of every loaded chunk of a tab (positions are chunk-relative rows and columns). */
+  private mapLoadedCells(tab: number, move: (row: number, col: number) => [number, number] | null): void {
+    for (const [key, body] of this.cache) {
+      if (!key.startsWith(`${tab}:`)) continue;
+      body.cells = moveCells(body.cells, move);
+    }
+  }
+
   /** Chunks currently in memory, as [tab, chunk]. */
   loadedChunks(): [number, number][] {
     return [...this.cache.keys()].map((key) => key.split(":").map(Number) as [number, number]);
@@ -363,8 +510,8 @@ export class BigSheetStore {
       const next = this.tabs[tab].chunks[chunk + 1];
       if (!next) entry.rowCount = Math.max(entry.rowCount, this.tabs[tab].rows - entry.rowStart);
       if (chunk === 0) {
-        body.rowCount = Math.max(body.rowCount ?? 0, this.tabs[tab].rows);
-        body.colCount = Math.max(body.colCount ?? 0, this.tabs[tab].cols);
+        body.rowCount = this.tabs[tab].rows;
+        body.colCount = this.tabs[tab].cols;
       }
       const { rows, cells, ...layout } = body;
       const have = rowCountOf(rows ?? []);
@@ -411,4 +558,18 @@ export class BigSheetStore {
     this.emit();
     return root;
   }
+}
+
+/** The cells with each position moved by `move` (null drops the cell). */
+function moveCells(
+  cells: Record<string, WorkbookCell> | undefined,
+  move: (row: number, col: number) => [number, number] | null,
+): Record<string, WorkbookCell> {
+  const out: Record<string, WorkbookCell> = {};
+  for (const [key, cell] of Object.entries(cells ?? {})) {
+    const at = key.indexOf(":");
+    const next = move(Number(key.slice(0, at)), Number(key.slice(at + 1)));
+    if (next) out[`${next[0]}:${next[1]}`] = cell;
+  }
+  return out;
 }
