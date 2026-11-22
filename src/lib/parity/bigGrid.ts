@@ -4,8 +4,9 @@
 import ExcelJS from "exceljs";
 import type { WorkbookCell, WorkbookCellStyle, WorkbookDocument, WorkbookMerge } from "../workbook";
 import { BigSheetStore } from "../v2/bigSheet";
-import { calculateTyped, FormulaIndex } from "../v2/bigFormulas";
+import { calculateTyped, FormulaIndex, refreshDependents } from "../v2/bigFormulas";
 import { editStructure } from "../v2/bigStructure";
+import { dragFill } from "../v2/bigClipboard";
 import { importXlsxToBlossom } from "../v2/streamImport";
 import { fakeBlossom, localSigner } from "../v2/testUtils";
 import { createWorkerHandler } from "../xlsxStream/workerCore";
@@ -108,6 +109,22 @@ export async function runOnBigStore(document: WorkbookDocument, steps: Step[]): 
         } else {
           await store.setCell(0, step.row, step.col, String(step.value));
         }
+        break;
+      }
+      case "numberFormat":
+        await store.load(0, store.chunkFor(0, step.row));
+        await store.edit(0, step.row, step.col, step.row, step.col, (cell) => ({ ...(cell ?? {}), style: { ...cell?.style, numberFormat: step.format } }));
+        break;
+      case "rotation":
+        await store.load(0, store.chunkFor(0, step.row));
+        await store.edit(0, step.row, step.col, step.row, step.col, (cell) => ({ ...(cell ?? {}), style: { ...cell?.style, rotation: step.value } }));
+        break;
+      case "fill": {
+        const source = { r1: step.r1, c1: step.c1, r2: step.r2, c2: step.c2 };
+        const extended = step.direction === "down" ? { ...source, r2: step.r2 + step.count } : { ...source, c2: step.c2 + step.count };
+        const done = await dragFill(store, 0, source, extended);
+        // Like the grid: the filled formulas are calculated afterwards.
+        if (done) await refreshDependents(store, index, [{ tab: 0, ...done }], undefined, true);
         break;
       }
       case "clear":

@@ -171,6 +171,19 @@ const SCENARIOS: Record<string, Step[]> = {
     { op: "hide", axis: "row", index: 4 },
     { op: "deleteRow", start: 4, end: 4 },
   ],
+  "a number format": [{ op: "numberFormat", row: 1, col: 1, format: "#,##0.00" }],
+  "a percent format": [{ op: "numberFormat", row: 3, col: 1, format: "0%" }],
+  "text rotation": [{ op: "rotation", row: 1, col: 0, value: 2 }],
+  "fill a number series down": [
+    { op: "set", row: 5, col: 3, value: 1 },
+    { op: "set", row: 6, col: 3, value: 2 },
+    { op: "fill", r1: 5, c1: 3, r2: 6, c2: 3, direction: "down", count: 3 },
+  ],
+  "fill a formula down": [
+    { op: "set", row: 5, col: 3, value: "=B2*2" },
+    { op: "fill", r1: 5, c1: 3, r2: 5, c2: 3, direction: "down", count: 2 },
+  ],
+  "fill text right": [{ op: "fill", r1: 1, c1: 0, r2: 1, c2: 0, direction: "right", count: 2 }],
   "merge moves with an inserted column": [
     { op: "merge", r1: 5, c1: 2, r2: 6, c2: 4 },
     { op: "insertColumn", index: 0, count: 1, direction: "left" },

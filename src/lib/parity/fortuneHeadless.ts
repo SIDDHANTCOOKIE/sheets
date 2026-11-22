@@ -19,7 +19,10 @@ export type Step =
   | { op: "columnWidth"; col: number; width: number }
   | { op: "hide"; axis: "row" | "column"; index: number }
   | { op: "show"; axis: "row" | "column"; index: number }
-  | { op: "freeze"; type: "row" | "column" | "both"; row: number; col: number };
+  | { op: "freeze"; type: "row" | "column" | "both"; row: number; col: number }
+  | { op: "numberFormat"; row: number; col: number; format: string }
+  | { op: "rotation"; row: number; col: number; value: number }
+  | { op: "fill"; r1: number; c1: number; r2: number; c2: number; direction: "down" | "right"; count: number };
 
 function newContext(sheets: Sheet[]): Context {
   const refs = {
@@ -87,6 +90,20 @@ export function runOnFortuneSheet(document: WorkbookDocument, steps: Step[]): Wo
       case "show":
         api.showRowOrColumn(ctx, [String(step.index)], step.axis);
         break;
+      case "numberFormat":
+        api.setCellFormat(ctx, step.row, step.col, "ct", { fa: step.format, t: "n" });
+        break;
+      case "rotation":
+        api.setCellFormat(ctx, step.row, step.col, "tr", String(step.value));
+        break;
+      case "fill": {
+        const down = step.direction === "down";
+        const apply = down
+          ? { row: [step.r2 + 1, step.r2 + step.count], column: [step.c1, step.c2] }
+          : { row: [step.r1, step.r2], column: [step.c2 + 1, step.c2 + step.count] };
+        api.autoFillCell(ctx, { row: [step.r1, step.r2], column: [step.c1, step.c2] }, apply, step.direction);
+        break;
+      }
       case "freeze":
         api.freeze(ctx, step.type, { row: step.row, column: step.col });
         break;
