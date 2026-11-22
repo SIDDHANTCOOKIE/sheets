@@ -3807,3 +3807,10 @@ pre {
 .big-menu-swatch { width: 18px; height: 18px; padding: 0; border-radius: 50%; border: 1px solid rgba(128, 128, 128, 0.5); cursor: pointer; }
 .big-menu .big-menu-swatch:hover:not(:disabled) { outline: 2px solid rgba(1, 136, 251, 0.6); background-clip: padding-box; }
 .big-menu-title { padding: 6px 10px 2px; font-size: 11px; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.04em; }
+
+.big-filter-list { max-height: 260px; overflow: auto; border: 1px solid rgba(128, 128, 128, 0.35); border-radius: 8px; padding: 4px; display: flex; flex-direction: column; }
+.big-filter-item { display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 5px; cursor: pointer; }
+.big-filter-item:hover { background: rgba(128, 128, 128, 0.15); }
+.big-filter-item input { width: auto; }
+.big-filter-value { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.big-filter-count { opacity: 0.55; font-variant-numeric: tabular-nums; }

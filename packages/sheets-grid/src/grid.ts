@@ -453,7 +453,15 @@ export class Grid {
       `${style?.italic ? "italic " : ""}${style?.bold ? "700 " : ""}${Math.min(style?.fontSize ?? 11, 24) * (96 / 72)}px ${style?.fontFamily ? `${style.fontFamily}, ` : ""}${theme.font}`;
 
     if (v.fr > 0) this.data.ensure?.(0, v.fr);
-    this.data.ensure?.(v.rows.first, v.rows.end);
+    // Only the rows that are really shown are loaded: a filter can hide thousands of rows in a row.
+    let from = -1;
+    for (let r = v.rows.first; r < v.rows.end; r++) {
+      if (this.rows.isHidden(r)) {
+        if (from >= 0) this.data.ensure?.(from, r);
+        from = -1;
+      } else if (from < 0) from = r;
+    }
+    if (from >= 0) this.data.ensure?.(from, v.rows.end);
 
     ctx.clearRect(0, 0, this.width, this.height);
     ctx.fillStyle = theme.background;

@@ -27,6 +27,7 @@ import { cellDisplay } from "../lib/workbook/format";
 import { BigFindBar } from "./BigFindBar";
 import { BigValidationDialog } from "./BigValidationDialog";
 import { BigConditionalDialog } from "./BigConditionalDialog";
+import { BigFilterDialog } from "./BigFilterDialog";
 import { formatFor, withoutArea } from "../lib/v2/bigConditional";
 import { validate } from "../lib/v2/bigValidation";
 import { BigSheetToolbar, shiftDecimals, type StylePatch } from "./BigSheetToolbar";
@@ -68,7 +69,8 @@ function applyLayout(grid: Grid, store: BigSheetStore, tab: number): void {
     ...(hidden ?? []).map((index) => ({ index, size: 0 })),
   ];
   grid.setSizes("col", overrides(layout.columnWidths, layout.hiddenColumns));
-  grid.setSizes("row", overrides(layout.rowHeights, layout.hiddenRows));
+  // Rows hidden by a filter are hidden like any other hidden row.
+  grid.setSizes("row", overrides(layout.rowHeights, [...(layout.hiddenRows ?? []), ...(layout.filter?.hidden ?? [])]));
   grid.setFrozen(layout.frozen?.rows ?? 0, layout.frozen?.columns ?? 0);
   grid.setZoom(layout.zoom ?? 1);
   grid.setMerges(layout.merges ?? []);
@@ -120,6 +122,7 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   const [editing, setEditing] = useState<{ row: number; col: number; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [validating, setValidating] = useState(false);
+  const [filtering, setFiltering] = useState(false);
   /** Right-click menu of a sheet tab (page position of its bottom-left, which tab). */
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; index: number } | null>(null);
   /** Function names for formula autocomplete (loaded the first time a formula is typed). */
@@ -869,6 +872,18 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           setFinding({ replace: key === "h" });
           return;
         }
+        if (mod && canEdit && active && (event.key === ";" || event.key === ":")) {
+          // Ctrl+; puts today's date in the cell, Ctrl+Shift+; the time.
+          event.preventDefault();
+          const now = new Date();
+          const pad = (n: number) => String(n).padStart(2, "0");
+          const text =
+            event.key === ";"
+              ? `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+              : `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+          void store.setCell(tab, active.row, active.col, text).then(() => refresh([pointRect({ tab, row: active.row, col: active.col })]));
+          return;
+        }
         if (mod && canEdit && (key === "z" || key === "y")) {
           event.preventDefault();
           if (key === "y" || event.shiftKey) redo();
@@ -899,6 +914,8 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
         onStyle={applyStyle}
         onValidation={() => setValidating(true)}
         onConditional={() => setFormatting(true)}
+        filtered={!!store.tabs[tab].layout.filter}
+        onFilter={() => setFiltering(true)}
         onLink={editLink}
         onComment={editComment}
         onQuickFormula={(name) => void quickFormula(name)}
@@ -955,7 +972,7 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           }}
         />
         <span className="big-sheet-note">
-          {calculating ?? (selectedCell?.comment ? `💬 ${selectedCell.comment}` : totals || `${rows.toLocaleString()} rows · large sheet mode${canEdit ? "" : " · read-only"}`)}
+          {calculating ?? (store.tabs[tab].layout.filter && !selectedCell?.comment ? `Filter on column ${columnName(store.tabs[tab].layout.filter.col)} ${store.tabs[tab].layout.filter.summary} · ${store.tabs[tab].layout.filter.hidden.length.toLocaleString()} rows hidden` : selectedCell?.comment ? `💬 ${selectedCell.comment}` : totals || `${rows.toLocaleString()} rows · large sheet mode${canEdit ? "" : " · read-only"}`)}
         </span>
         {canEdit && (
           <button type="button" className="btn btn-primary btn-sm" disabled={saving || store.dirtyCount === 0} onClick={() => void save()}>
@@ -964,6 +981,31 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           </button>
         )}
       </div>
+      {filtering && active && (
+        <BigFilterDialog
+          key={`${tab}:${active.col}`}
+          store={store}
+          tab={tab}
+          col={store.tabs[tab].layout.filter?.col ?? active.col}
+          columnLabel={columnName(store.tabs[tab].layout.filter?.col ?? active.col)}
+          current={store.tabs[tab].layout.filter}
+          onClose={() => setFiltering(false)}
+          onApply={(filter) => {
+            setFiltering(false);
+            store
+              .setLayout(tab, { filter })
+              .then(() => gridRef.current && applyLayout(gridRef.current, store, tab))
+              .catch(() => {});
+          }}
+          onClear={() => {
+            setFiltering(false);
+            store
+              .setLayout(tab, { filter: undefined })
+              .then(() => gridRef.current && applyLayout(gridRef.current, store, tab))
+              .catch(() => {});
+          }}
+        />
+      )}
       {formatting && range && (
         <BigConditionalDialog
           rangeLabel={selectionLabel()}

@@ -17,7 +17,7 @@
       "text rotation": "done",
       "freeze rows and columns": "done",
       "conditional formatting": "done",
-      "filter": "todo",
+      "filter": "done",
       "link": "done",
       "comment": "done",
       "quick formula (SUM, AVERAGE...)": "done",
@@ -50,7 +50,7 @@
       "zoom": "done",
       "keyboard: arrows, Tab, Enter, Ctrl+arrows, Home/End, PageUp/Down": "done",
       "keyboard: F2, type to overwrite, Delete": "done",
-      "keyboard: Ctrl+; date/time, Ctrl+Z/Y, Ctrl+B/I/U, Ctrl+F/H": "partial",
+      "keyboard: Ctrl+; date/time, Ctrl+Z/Y, Ctrl+B/I/U, Ctrl+F/H": "done",
       "read-only mode": "done"
     },
     "Formulas": {
@@ -71,7 +71,7 @@
       "conditional formatting (rules, data bars, colour scales)": "partial",
       "hyperlinks": "done",
       "comments": "done",
-      "filter by value / colour": "todo",
+      "filter by value / colour": "partial",
       "images": "todo"
     },
     "Persistence and platform": {

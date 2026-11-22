@@ -4,6 +4,7 @@ import { BigSheetStore } from "./bigSheet";
 import { calculateTyped, FormulaIndex } from "./bigFormulas";
 import { editStructure, renameTabAndFormulas } from "./bigStructure";
 import { sortArea } from "./bigSort";
+import { BLANK, rowsToHide, scanColumn } from "./bigFilter";
 import { editLayout } from "./layoutEdit";
 import { fakeBlossom, localSigner } from "./testUtils";
 import { buildLargeXlsx } from "../xlsxStream/testFixtures";
@@ -305,4 +306,45 @@ describe("tabs", () => {
     expect(fourth.root.tabs.some((t) => t.id === fourth.root.activeSheetId)).toBe(true);
     expect(() => fourth.remapTabs([])).toThrow();
   }, 180_000);
+});
+
+describe("filtering by a column", () => {
+  it("lists the values, hides the rows that do not match, keeps the header, and moves with the layout", async () => {
+    const { store, reopen } = await open("struct-filter");
+    await store.load(0, 0);
+    const last = store.tabs[0].rows - 1;
+    await store.load(0, store.chunkFor(0, last));
+    await store.setCell(0, 1, 8, "red");
+    await store.setCell(0, 2, 8, "blue");
+    await store.setCell(0, 3, 8, "red");
+    await store.setCell(0, last, 8, "green");
+
+    const progress: number[] = [];
+    const scan = (await scanColumn(store, 0, 8, (done) => progress.push(done)))!;
+    expect(progress.at(-1)).toBe(store.tabs[0].chunks.length);
+    const counts = Object.fromEntries(scan.values.map((v) => [v.value, v.count]));
+    expect(counts.red).toBe(2);
+    expect(counts.blue).toBe(1);
+    expect(counts.green).toBe(1);
+    expect(counts[BLANK]).toBe(store.tabs[0].rows - 4);
+
+    // Show only red: with a header row, row 0 is never hidden.
+    const hidden = rowsToHide(scan, store.tabs[0].rows, true, (text) => text === "red");
+    expect(hidden).not.toContain(0);
+    expect(hidden).not.toContain(1);
+    expect(hidden).toContain(2);
+    expect(hidden).toContain(last);
+    expect(hidden).toHaveLength(store.tabs[0].rows - 1 - 2);
+    // Without a header row, row 0 can be hidden too.
+    expect(rowsToHide(scan, store.tabs[0].rows, false, (text) => text === "red")).toContain(0);
+
+    const filter = { col: 8, header: true, hidden, summary: "is red" };
+    await store.setLayout(0, { filter });
+    expect((await reopen()).tabs[0].layout.filter).toEqual(filter);
+
+    // Inserting a row above moves the hidden rows; deleting the column drops the filter.
+    expect(editLayout({ filter }, { kind: "insert", axis: "row", index: 2, count: 1 }).filter?.hidden[0]).toBe(hidden[0] + 1);
+    expect(editLayout({ filter }, { kind: "insert", axis: "col", index: 0, count: 1 }).filter?.col).toBe(9);
+    expect(editLayout({ filter }, { kind: "delete", axis: "col", index: 8, count: 1 }).filter).toBeUndefined();
+  }, 120_000);
 });

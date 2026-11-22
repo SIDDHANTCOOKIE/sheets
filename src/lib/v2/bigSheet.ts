@@ -14,6 +14,7 @@ import { readChunk, writeChunk, type ChunkBody as StoredChunkBody } from "./chun
 import { frame } from "./codec";
 import { downloadTabBody } from "./blossom";
 import { editLayout, type StructEdit } from "./layoutEdit";
+import type { ColumnFilter } from "./bigFilter";
 import { FRAME_TYPE_TAB_INDEX, resolveChunks, type ChunkEntry, type RootTab, type SheetRootV2 } from "./root";
 import { randomId } from "../utils";
 
@@ -58,11 +59,13 @@ export interface TabLayout {
   /** 1 = 100%. */
   zoom?: number;
   conditionalFormats?: WorkbookConditionalRule[];
+  /** A filter by the values of one column: its `hidden` rows are hidden on top of rows hidden by hand. */
+  filter?: ColumnFilter;
   merges?: { r: number; c: number; rs: number; cs: number }[];
   borders?: { r1: number; c1: number; r2: number; c2: number; type: "all" | "outside" | "inside" | "top" | "bottom" | "left" | "right" | "none"; color?: string; style?: string }[];
 }
 
-const LAYOUT_KEYS = ["columnWidths", "rowHeights", "hiddenRows", "hiddenColumns", "frozen", "zoom", "conditionalFormats", "merges", "borders"] as const;
+const LAYOUT_KEYS = ["columnWidths", "rowHeights", "hiddenRows", "hiddenColumns", "frozen", "zoom", "conditionalFormats", "filter", "merges", "borders"] as const;
 
 export interface BigTab {
   layout: TabLayout;

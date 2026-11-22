@@ -87,5 +87,13 @@ export function editLayout(layout: TabLayout, edit: StructEdit): TabLayout {
     return ranges.length > 0 ? [{ ...rule, ranges }] : [];
   });
   if (rules.length > 0) out.conditionalFormats = rules;
+
+  if (layout.filter) {
+    const col = row ? layout.filter.col : moveIndex(layout.filter.col, edit);
+    if (col !== null) {
+      const hidden = row ? (moveList(layout.filter.hidden, edit) ?? []) : layout.filter.hidden;
+      out.filter = { ...layout.filter, col, hidden };
+    }
+  }
   return out;
 }

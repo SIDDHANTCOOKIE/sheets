@@ -102,6 +102,8 @@ export function BigSheetToolbar({
   onComment,
   onValidation,
   onConditional,
+  filtered,
+  onFilter,
   onBorder,
   onMerge,
   canSplit,
@@ -128,6 +130,9 @@ export function BigSheetToolbar({
   onComment: () => void;
   onValidation: () => void;
   onConditional: () => void;
+  /** Is a filter on? */
+  filtered: boolean;
+  onFilter: () => void;
   /** Zoom as a fraction (1 = 100%) and how to change it. */
   zoom: { value: number; set: (zoom: number) => void };
   /** Puts a border on the selection. */
@@ -381,7 +386,7 @@ export function BigSheetToolbar({
       <Button title="Conditional formatting" disabled={off} onClick={onConditional}>
         <Palette size={16} />
       </Button>
-      <Button title="Filter" disabled>
+      <Button title="Filter by the values of the active column" active={filtered} disabled={off} onClick={onFilter}>
         <Filter size={16} />
       </Button>
       <Button title="Insert link" disabled={off} onClick={onLink}>
