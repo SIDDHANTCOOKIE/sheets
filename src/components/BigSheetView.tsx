@@ -447,6 +447,43 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
     refreshQueue.current = job;
   };
 
+  /** SUM / AVERAGE / ... of each selected column, written in the cell under the selection. */
+  const quickFormula = async (name: string) => {
+    if (!canEdit || !range) return;
+    const tabNo = tab;
+    const row = range.r2 + 1;
+    if (range.r2 === range.r1 && range.c2 === range.c1) {
+      toast("Select the cells to total first, then pick a formula.", "error");
+      return;
+    }
+    if (row >= store.tabs[tabNo].rows) {
+      toast("There is no row below the selection to put the result in.", "error");
+      return;
+    }
+    try {
+      setCalculating("Calculating…");
+      await store.load(tabNo, store.chunkFor(tabNo, row));
+      const written: ChangedRect[] = [];
+      for (let col = range.c1; col <= range.c2; col++) {
+        const formula = `${name}(${columnName(col)}${range.r1 + 1}:${columnName(col)}${range.r2 + 1})`;
+        const result = await calculateTyped(store, tabNo, row, col, formula);
+        await store.edit(tabNo, row, col, row, col, (cell) => ({
+          ...(cell?.style ? { style: cell.style } : {}),
+          formula,
+          value: result.value,
+          ...(result.error ? { type: "error" as const } : {}),
+        }));
+        written.push(pointRect({ tab: tabNo, row, col }));
+      }
+      await refresh(written);
+      gridRef.current?.select({ ranges: [{ r1: row, r2: row, c1: range.c1, c2: range.c2 }], active: { row, col: range.c1 }, anchor: { row, col: range.c1 } });
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Couldn't calculate that.", "error");
+    } finally {
+      setCalculating(null);
+    }
+  };
+
   /** Sorts the selected rows by the column of the active cell. */
   const sort = (descending: boolean) => {
     if (!canEdit || !range || !active) return;
@@ -684,6 +721,8 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           )
         }
         onStyle={applyStyle}
+        onQuickFormula={(name) => void quickFormula(name)}
+        onSearch={() => setFinding({ replace: false })}
         zoom={{ value: gridRef.current?.zoom ?? 1, set: (z) => gridRef.current?.setZoom(z, true) }}
         onBorder={border}
         onMerge={(how) => void merge(how)}

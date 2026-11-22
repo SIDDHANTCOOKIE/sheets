@@ -96,6 +96,8 @@ export function BigSheetToolbar({
   onStyle,
   freeze,
   zoom,
+  onQuickFormula,
+  onSearch,
   onBorder,
   onMerge,
   canSplit,
@@ -115,6 +117,9 @@ export function BigSheetToolbar({
   onStyle: (patch: StylePatch) => void;
   /** Frozen panes: how many rows/columns are frozen now, the choices, and how to apply one. */
   freeze: { rows: number; columns: number; options: { label: string; rows: number; columns: number }[]; apply: (rows: number, columns: number) => void };
+  /** Writes SUM/AVERAGE/... of each selected column just below the selection. */
+  onQuickFormula: (name: "SUM" | "AVERAGE" | "COUNT" | "MAX" | "MIN") => void;
+  onSearch: () => void;
   /** Zoom as a fraction (1 = 100%) and how to change it. */
   zoom: { value: number; set: (zoom: number) => void };
   /** Puts a border on the selection. */
@@ -377,13 +382,28 @@ export function BigSheetToolbar({
       <Button title="Comment" disabled>
         <MessageSquare size={16} />
       </Button>
-      <Button title="Formulas" disabled>
+      <label className={cx("big-tool is-select", off && "is-disabled")} title="Quick formula: total of the selected columns, written below them">
         <Sigma size={16} />
-      </Button>
+        <select
+          className="big-tool-select"
+          disabled={off}
+          value=""
+          onChange={(event) => event.target.value && onQuickFormula(event.target.value as Parameters<typeof onQuickFormula>[0])}
+        >
+          <option value="" disabled>
+            Σ
+          </option>
+          <option value="SUM">Sum</option>
+          <option value="AVERAGE">Average</option>
+          <option value="COUNT">Count</option>
+          <option value="MAX">Max</option>
+          <option value="MIN">Min</option>
+        </select>
+      </label>
       <Button title="Data validation" disabled>
         <ListChecks size={16} />
       </Button>
-      <Button title="Search" disabled>
+      <Button title="Find (Ctrl+F)" onClick={onSearch}>
         <Search size={16} />
       </Button>
     </div>
