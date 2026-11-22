@@ -48,3 +48,28 @@ describe("conditional formatting", () => {
     expect(withoutArea(rules, { r1: 0, c1: 0, r2: 20, c2: 20 })).toEqual([]);
   });
 });
+
+describe("data bars and colour scales", () => {
+  const bar = { ranges: [{ r1: 0, c1: 0, r2: 9, c2: 0 }], condition: { type: "dataBar", values: ["0", "100"] }, format: { cellColor: "#5b9bd5" } };
+  const scale = { ranges: [{ r1: 0, c1: 0, r2: 9, c2: 0 }], condition: { type: "colorScale", values: ["10", "20"] }, format: { cellColor: "#ffffff", toColor: "#000000" } };
+
+  it("sizes a bar by where the value lies between the lowest and highest", async () => {
+    const { formatFor } = await import("./bigConditional");
+    expect(formatFor([bar], 0, 0, { value: 50 })?.bar).toEqual({ fraction: 0.5, color: "#5b9bd5" });
+    expect(formatFor([bar], 0, 0, { value: 150 })?.bar?.fraction).toBe(1); // past the end stays full
+    expect(formatFor([bar], 0, 0, { value: -5 })?.bar?.fraction).toBe(0);
+    expect(formatFor([bar], 0, 0, { value: "text" })).toBeUndefined(); // only numbers
+    expect(formatFor([bar], 0, 0, undefined)).toBeUndefined();
+    expect(formatFor([{ ...bar, condition: { type: "dataBar", values: ["5", "5"] } }], 0, 0, { value: 5 })?.bar?.fraction).toBe(1);
+  });
+
+  it("blends the two colours of a scale", async () => {
+    const { formatFor, blend } = await import("./bigConditional");
+    expect(blend("#000000", "#ffffff", 0.5)).toBe("#808080");
+    expect(blend("#ff0000", "#0000ff", 0)).toBe("#ff0000");
+    expect(blend("#ff0000", "#0000ff", 2)).toBe("#0000ff");
+    expect(formatFor([scale], 0, 0, { value: 10 })?.cellColor).toBe("#ffffff");
+    expect(formatFor([scale], 0, 0, { value: 20 })?.cellColor).toBe("#000000");
+    expect(formatFor([scale], 0, 0, { value: 15 })?.cellColor).toBe("#808080");
+  });
+});

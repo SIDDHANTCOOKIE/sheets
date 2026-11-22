@@ -68,7 +68,7 @@
     },
     "Data features": {
       "data validation (dropdown, number, date, text length...)": "partial",
-      "conditional formatting (rules, data bars, colour scales)": "partial",
+      "conditional formatting (rules, data bars, colour scales)": "done",
       "hyperlinks": "done",
       "comments": "done",
       "filter by value / colour": "partial",

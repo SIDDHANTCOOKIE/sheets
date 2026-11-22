@@ -32,6 +32,8 @@ export interface GridCellStyle {
   fontFamily?: string;
   wrap?: boolean;
   verticalAlign?: "top" | "middle" | "bottom";
+  /** A data bar behind the text: how much of the cell's width it fills (0 to 1) and its colour. */
+  bar?: { fraction: number; color: string };
   /** FortuneSheet codes: 0 none, 1 up 45°, 2 down 45°, 3 stacked letters, 4 up 90°, 5 down 90°. */
   rotation?: number;
 }
@@ -519,6 +521,10 @@ export class Grid {
         } else if (style?.background) {
           ctx.fillStyle = style.background;
           ctx.fillRect(left, top, w, h);
+        }
+        if (style?.bar && cell !== undefined) {
+          ctx.fillStyle = style.bar.color;
+          ctx.fillRect(left + 1, top + 3, Math.max(1, (w - 2) * style.bar.fraction), h - 6);
         }
         if (cell?.text) this.drawText(cell, left, top, w, h, fonts(style));
         if (cell?.note) this.drawNoteMark(left, top, w);

@@ -31,7 +31,7 @@ import { BigValidationDialog } from "./BigValidationDialog";
 import { BigConditionalDialog } from "./BigConditionalDialog";
 import { BigFilterDialog } from "./BigFilterDialog";
 import { BigSortDialog } from "./BigSortDialog";
-import { formatFor, withoutArea } from "../lib/v2/bigConditional";
+import { formatFor, numericExtent, SCALE_TYPES, withoutArea } from "../lib/v2/bigConditional";
 import { validate } from "../lib/v2/bigValidation";
 import { helpFor, tokenizeFormula } from "../lib/v2/formulaHelp";
 import { BigSheetToolbar, shiftDecimals, type StylePatch } from "./BigSheetToolbar";
@@ -98,7 +98,9 @@ function tabData(store: BigSheetStore, tab: number): GridData {
       const cell = store.cell(tab, row, col);
       // Conditional formatting colours the cell while it is drawn; nothing is stored in the cell.
       const rule = formatFor(store.tabs[tab]?.layout.conditionalFormats, row, col, cell);
-      const style = rule ? { ...cell?.style, ...(rule.textColor ? { color: rule.textColor } : {}), ...(rule.cellColor ? { background: rule.cellColor } : {}) } : cell?.style;
+      const style = rule
+        ? { ...cell?.style, ...(rule.textColor ? { color: rule.textColor } : {}), ...(rule.cellColor ? { background: rule.cellColor } : {}), ...(rule.bar ? { bar: rule.bar } : {}) }
+        : cell?.style;
       if (!cell) return rule ? { text: "", style } : null;
       // A cell that no longer fits its validation rule (typed before the rule, pasted, filled) is marked.
       const invalid = !!cell.validation && cell.value !== undefined && validate(cell.validation, shown(cell)) !== null;
@@ -1117,11 +1119,26 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           onClose={() => setFormatting(false)}
           onSave={(condition, format) => {
             setFormatting(false);
-            const rules = store.tabs[tab].layout.conditionalFormats ?? [];
-            // A new rule goes first so it wins over older ones on the same cells.
-            store
-              .setLayout(tab, { conditionalFormats: [{ ranges: [{ r1: range.r1, c1: range.c1, r2: range.r2, c2: range.c2 }], condition, format }, ...rules] })
-              .catch(() => {});
+            const area = { r1: range.r1, c1: range.c1, r2: range.r2, c2: range.c2 };
+            const tabNo = tab;
+            const add = (final: typeof condition) => {
+              const rules = store.tabs[tabNo].layout.conditionalFormats ?? [];
+              // A new rule goes first so it wins over older ones on the same cells.
+              return store.setLayout(tabNo, { conditionalFormats: [{ ranges: [area], condition: final, format }, ...rules] });
+            };
+            if (!SCALE_TYPES.includes(condition.type)) {
+              add(condition).catch(() => {});
+              return;
+            }
+            // Bars and scales compare with the lowest and highest number of the range: read it once now.
+            setCalculating("Reading the range…");
+            numericExtent(store, tabNo, area)
+              .then((extent) => {
+                if (!extent) return toast("There are no numbers in the selection to colour.", "error");
+                return add({ type: condition.type, values: [String(extent.min), String(extent.max)] });
+              })
+              .catch((error) => toast(error instanceof Error ? error.message : "Couldn't read the range.", "error"))
+              .finally(() => setCalculating(null));
           }}
           onClearHere={() => {
             setFormatting(false);

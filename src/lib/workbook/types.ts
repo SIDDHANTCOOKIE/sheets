@@ -92,6 +92,8 @@ export interface WorkbookConditionalRule {
   format: {
     textColor?: string;
     cellColor?: string;
+    /** Colour scales: the colour of the highest value (cellColor is the lowest). */
+    toColor?: string;
   };
 }
 
