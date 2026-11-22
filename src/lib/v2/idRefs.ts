@@ -10,12 +10,14 @@
 // `flags` has bit 1 = column is $absolute, bit 2 = row is $absolute. A whole-column reference has "-" for the
 // row, a whole-row reference "-" for the column. A row or column that has no id yet (past the end of the
 // sheet) is written "@<position>" and stays positional. Everything else in the formula text is untouched.
+// A reference to the formula's own tab has "_" in place of the tab id, so a copied tab (which shares its stored
+// chunks with the original) reads its own rows, not the original's.
 //
 // Deleting rows or columns leaves a tombstone (the neighbours the id had), so a range whose corner was deleted
 // can still resolve: its start moves to the next surviving row or column and its end to the previous one, as
 // in Excel. A single reference to a deleted row or column, or a range with nothing left in it, is #REF!.
-import { columnIndex, columnName, quoteSheet } from "@formstr/sheets-formula";
-import { indexOfRow, rowIdAt, type RowRun } from "../workbook/ids";
+import { columnIndex, columnName, quoteSheet } from "../../../packages/sheets-formula/src/refs";
+import { rowIdAt, type RowRun } from "../workbook/ids";
 
 /** What is left behind by a deleted id: the surviving ids on each side of it when it was deleted. */
 export type Tombstone = [prev: string | null, next: string | null];
@@ -69,6 +71,7 @@ export class ArrayAxis implements Axis {
 
 /** An axis held as runs of ids (rows of a big sheet), so a million rows are a handful of entries. */
 export class RunAxis implements Axis {
+  private byTag?: Map<string, { start: number; end: number; at: number }[]>;
   constructor(
     public runs: readonly RowRun[],
     public tombstones: Tombstones = {},
@@ -82,7 +85,21 @@ export class RunAxis implements Axis {
     return rowIdAt(this.runs, index);
   }
   indexOf(id: string): number {
-    return indexOfRow(this.runs, id);
+    if (!this.byTag) {
+      this.byTag = new Map();
+      let at = 0;
+      for (const [tag, start, length] of this.runs) {
+        const list = this.byTag.get(tag) ?? [];
+        list.push({ start, end: start + length, at });
+        this.byTag.set(tag, list);
+        at += length;
+      }
+    }
+    const dot = id.lastIndexOf(".");
+    if (dot < 0) return -1;
+    const n = Number(id.slice(dot + 1));
+    for (const run of this.byTag.get(id.slice(0, dot)) ?? []) if (n >= run.start && n < run.end) return run.at + (n - run.start);
+    return -1;
   }
   tombstone(id: string): Tombstone | undefined {
     return this.tombstones[id];
@@ -128,13 +145,16 @@ const tabNamed = (ctx: RefContext, name: string) => ctx.tabs.find((tab) => tab.n
 const tabById = (ctx: RefContext, id: string) => ctx.tabs.find((tab) => tab.id === id);
 
 /** `~(tab:row:col:flags)` for a position; a position without an id yet stays positional ("@5"). */
-function token(tab: TabAxes, row: number | null, col: number | null, colAbs: boolean, rowAbs: boolean): string {
+function token(tab: TabAxes, self: boolean, row: number | null, col: number | null, colAbs: boolean, rowAbs: boolean): string {
   const part = (axis: Axis, index: number | null) => (index === null ? "-" : (axis.idAt(index) ?? `@${index}`));
-  return `~(${tab.id}:${part(tab.rows, row)}:${part(tab.cols, col)}:${(colAbs ? 1 : 0) | (rowAbs ? 2 : 0)})`;
+  return `~(${self ? SELF : tab.id}:${part(tab.rows, row)}:${part(tab.cols, col)}:${(colAbs ? 1 : 0) | (rowAbs ? 2 : 0)})`;
 }
 
+/** The tab id that means "the tab this formula lives on". */
+export const SELF = "_";
+
 /** One A1 reference (without its sheet prefix) as id tokens, or null when it is not a reference we understand. */
-function refToIds(tab: TabAxes, text: string): string | null {
+function refToIds(tab: TabAxes, self: boolean, text: string): string | null {
   const unsheet = (part: string) => part;
   const cell = (s: string) => {
     const m = CELL.exec(unsheet(s));
@@ -143,25 +163,25 @@ function refToIds(tab: TabAxes, text: string): string | null {
   const colon = text.indexOf(":");
   if (colon < 0) {
     const c = cell(text);
-    return c && c.row >= 0 ? token(tab, c.row, c.col, c.colAbs, c.rowAbs) : null;
+    return c && c.row >= 0 ? token(tab, self, c.row, c.col, c.colAbs, c.rowAbs) : null;
   }
   const colsMatch = COLS.exec(text);
   if (colsMatch) {
     const a = columnIndex(colsMatch[2]);
     const b = columnIndex(colsMatch[4]);
-    return `${token(tab, null, a, colsMatch[1] === "$", false)}:${token(tab, null, b, colsMatch[3] === "$", false)}`;
+    return `${token(tab, self, null, a, colsMatch[1] === "$", false)}:${token(tab, self, null, b, colsMatch[3] === "$", false)}`;
   }
   const rowsMatch = ROWS.exec(text);
   if (rowsMatch) {
     const a = Number(rowsMatch[2]) - 1;
     const b = Number(rowsMatch[4]) - 1;
     if (a < 0 || b < 0) return null;
-    return `${token(tab, a, null, false, rowsMatch[1] === "$")}:${token(tab, b, null, false, rowsMatch[3] === "$")}`;
+    return `${token(tab, self, a, null, false, rowsMatch[1] === "$")}:${token(tab, self, b, null, false, rowsMatch[3] === "$")}`;
   }
   const a = cell(text.slice(0, colon));
   const b = cell(text.slice(colon + 1));
   if (!a || !b || a.row < 0 || b.row < 0) return null;
-  return `${token(tab, a.row, a.col, a.colAbs, a.rowAbs)}:${token(tab, b.row, b.col, b.colAbs, b.rowAbs)}`;
+  return `${token(tab, self, a.row, a.col, a.colAbs, a.rowAbs)}:${token(tab, self, b.row, b.col, b.colAbs, b.rowAbs)}`;
 }
 
 const unquote = (name: string) => (name.startsWith("'") ? name.slice(1, -1).replace(/''/g, "'") : name);
@@ -177,7 +197,7 @@ export function formulaToIds(formula: string, ctx: RefContext): string {
       return part.replace(A1, (whole: string, prefix: string | undefined, ref: string) => {
         const tab = prefix ? tabNamed(ctx, unquote(prefix.slice(0, -1))) : here;
         if (!tab) return whole;
-        return refToIds(tab, ref) ?? whole;
+        return refToIds(tab, tab.id === ctx.current, ref) ?? whole;
       });
     })
     .join("");
@@ -218,7 +238,7 @@ export function formulaFromIds(stored: string, ctx: RefContext): string {
     .map((part, i) => {
       if (i % 2 === 1) return part;
       return part.replace(ID, (_whole, tabId, row1, col1, flags1, _tab2, row2, col2, flags2) => {
-        const tab = tabById(ctx, tabId);
+        const tab = tabById(ctx, tabId === SELF ? ctx.current : tabId);
         if (!tab) return REF_ERROR;
         const prefix = tab.id === ctx.current ? "" : `${quoteSheet(tab.name)}!`;
         const abs = (flags: string) => ({ col: (Number(flags) & 1) !== 0, row: (Number(flags) & 2) !== 0 });

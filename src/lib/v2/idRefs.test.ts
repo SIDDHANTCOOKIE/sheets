@@ -46,7 +46,18 @@ describe("formulas by id: the text conversion", () => {
   it("writes the sheet name only when the reference is to another sheet", () => {
     const stored = formulaToIds("Sheet1!A1+'My Data'!A1", ctx);
     expect(formulaFromIds(stored, ctx)).toBe("A1+'My Data'!A1");
-    expect(formulaFromIds(stored, ctxOf([a, b], "b"))).toBe("Sheet1!A1+A1");
+    // the same formula typed on the other sheet
+    const onB = ctxOf([a, b], "b");
+    expect(formulaFromIds(formulaToIds("Sheet1!A1+'My Data'!A1", onB), onB)).toBe("Sheet1!A1+A1");
+  });
+
+  it("a reference to the formula's own tab means whichever tab holds the formula (copied tabs share their stored formulas)", () => {
+    const stored = formulaToIds("A1+B2+Sheet1!C3+'My Data'!D4", ctx);
+    expect(stored).toContain("~(_:");
+    // read the same stored text as a copy of the tab that has other ids for the same rows and columns
+    const copy: TabAxes = { id: "c", name: "Sheet1 (2)", rows: new ArrayAxis(rows(a).ids.slice()), cols: new ArrayAxis(cols(a).ids.slice()) };
+    const inCopy = ctxOf([a, b, copy], "c");
+    expect(formulaFromIds(stored, inCopy)).toBe("A1+B2+C3+'My Data'!D4");
   });
 
   it("follows a renamed sheet because it names the tab by id", () => {
