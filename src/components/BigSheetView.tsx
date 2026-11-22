@@ -372,6 +372,26 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
       .then(() => gridRef.current && applyLayout(gridRef.current, store, tab))
       .catch(() => {});
   };
+  /** Asks for a size and gives it to every selected row (or column). */
+  const askSize = (axis: "rows" | "columns") => {
+    if (!canEdit || !range) return;
+    const rowsAxis = axis === "rows";
+    const from = rowsAxis ? range.r1 : range.c1;
+    const to = rowsAxis ? range.r2 : range.c2;
+    const asked = window.prompt(rowsAxis ? "Row height in pixels (8–545):" : "Column width in pixels (8–2038):", String(rowsAxis ? 30 : 116));
+    if (asked === null) return;
+    const size = Math.round(Number(asked));
+    const max = rowsAxis ? 545 : 2038;
+    if (!Number.isFinite(size) || size < 8 || size > max) return toast(`Enter a number from 8 to ${max}.`, "error");
+    if (to - from + 1 > 200_000) return toast("That is too many to resize at once.", "error");
+    const key = rowsAxis ? "rowHeights" : "columnWidths";
+    const next = { ...(store.tabs[tab].layout[key] ?? {}) };
+    for (let i = from; i <= to; i++) next[i] = size;
+    store
+      .setLayout(tab, { [key]: next })
+      .then(() => gridRef.current && applyLayout(gridRef.current, store, tab))
+      .catch(() => {});
+  };
   const hiddenNear = (axis: "rows" | "columns") => {
     if (!range) return false;
     const list = store.tabs[tab]?.layout[axis === "rows" ? "hiddenRows" : "hiddenColumns"] ?? [];
@@ -618,6 +638,8 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
               [
                 [`Hide row${range.r2 > range.r1 ? "s" : ""} ${range.r1 + 1}${range.r2 > range.r1 ? "–" + (range.r2 + 1) : ""}`, () => setHidden("rows", true), true],
                 [`Hide column${range.c2 > range.c1 ? "s" : ""} ${columnName(range.c1)}${range.c2 > range.c1 ? "–" + columnName(range.c2) : ""}`, () => setHidden("columns", true), true],
+                ["Set row height…", () => askSize("rows"), true],
+                ["Set column width…", () => askSize("columns"), true],
                 ["Show hidden rows here", () => setHidden("rows", false), hiddenNear("rows")],
                 ["Show hidden columns here", () => setHidden("columns", false), hiddenNear("columns")],
               ] as [string, () => void, boolean][]
