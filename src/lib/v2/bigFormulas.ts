@@ -132,7 +132,7 @@ export async function calculateTyped(
 // ---- keeping dependent formulas up to date -----------------------------------------------------
 
 /** What a formula reads in one tab; `null` ends mean "to the last row/column" (A:A, 1:1). */
-interface Footprint {
+export interface Footprint {
   tab: number;
   r1: number;
   c1: number;
@@ -140,7 +140,7 @@ interface Footprint {
   c2: number | null;
 }
 
-interface FormulaEntry {
+export interface FormulaEntry {
   tab: number;
   row: number;
   col: number;
@@ -295,16 +295,34 @@ export class FormulaIndex {
   }
 
   /** Brings the entries inside a rectangle in line with the sheet (a clear or an undo can remove formulas). */
-  async syncArea(store: BigSheetStore, area: ChangedRect): Promise<void> {
+  async syncArea(store: BigSheetStore, area: ChangedRect, discover = false): Promise<FormulaEntry[]> {
+    const found: FormulaEntry[] = [];
     if (area.r1 === area.r2 && area.c1 === area.c2) {
       await store.load(area.tab, store.chunkFor(area.tab, area.r1));
       await this.sync(store, area.tab, area.r1, area.c1);
-      return;
+      const entry = this.entries.get(addressKey(area.tab, area.r1, area.c1));
+      if (entry) found.push(entry);
+      return found;
     }
     for (const entry of [...this.entries.values()]) {
       if (entry.tab !== area.tab || entry.row < area.r1 || entry.row > area.r2 || entry.col < area.c1 || entry.col > area.c2) continue;
       await this.sync(store, entry.tab, entry.row, entry.col);
     }
+    if (discover) {
+      // Cells pasted or filled into the area may hold formulas the index has not seen.
+      for (let chunk = store.chunkFor(area.tab, area.r1); chunk <= store.chunkFor(area.tab, area.r2); chunk++) {
+        await store.load(area.tab, chunk);
+        const fresh: [number, number, string][] = [];
+        for (const [row, col, cell] of store.cellsOfChunk(area.tab, chunk)) {
+          if (cell.formula && row >= area.r1 && row <= area.r2 && col >= area.c1 && col <= area.c2) fresh.push([row, col, cell.formula]);
+        }
+        for (const [row, col, formula] of fresh) await this.set(store, area.tab, row, col, formula);
+      }
+    }
+    for (const entry of this.entries.values()) {
+      if (entry.tab === area.tab && entry.row >= area.r1 && entry.row <= area.r2 && entry.col >= area.c1 && entry.col <= area.c2) found.push(entry);
+    }
+    return found;
   }
 
   /** Does the formula read any cell of the rectangle? */
@@ -338,11 +356,17 @@ export class FormulaIndex {
   }
 
   /** The formulas that must be recalculated after `changed` cells changed, in an order that works (inputs first). */
-  affected(store: BigSheetStore, changed: ChangedRect[]): { order: FormulaEntry[]; cyclic: FormulaEntry[] } {
+  affected(store: BigSheetStore, changed: ChangedRect[], include: FormulaEntry[] = []): { order: FormulaEntry[]; cyclic: FormulaEntry[] } {
     const members = new Set<FormulaEntry>();
     const readers = new Map<FormulaEntry, FormulaEntry[]>();
     const waiting = new Map<FormulaEntry, number>();
     const queue: FormulaEntry[] = [];
+    // Formulas that were just pasted or filled hold a result copied from elsewhere: they need their own recalculation.
+    for (const entry of include) {
+      members.add(entry);
+      waiting.set(entry, 0);
+      queue.push(entry);
+    }
     const reach = (from: ChangedRect, source: FormulaEntry | null) => {
       for (const entry of this.readersOf(store, from)) {
         if (source) {
@@ -388,10 +412,13 @@ export async function refreshDependents(
   index: FormulaIndex,
   changed: ChangedRect[],
   onProgress?: RefreshProgress,
+  /** Set after a paste or fill: the formulas inside the changed areas are recalculated too. */
+  recalcInside = false,
 ): Promise<number> {
-  for (const area of changed) await index.syncArea(store, area);
+  const inside: FormulaEntry[] = [];
+  for (const area of changed) inside.push(...(await index.syncArea(store, area, recalcInside)));
   await index.ensureScanned(store, onProgress);
-  const { order, cyclic } = index.affected(store, changed);
+  const { order, cyclic } = index.affected(store, changed, recalcInside ? inside : []);
   const write = async (entry: { tab: number; row: number; col: number }, result: FormulaResult) => {
     await store.load(entry.tab, store.chunkFor(entry.tab, entry.row));
     const current = store.cell(entry.tab, entry.row, entry.col) ?? {};

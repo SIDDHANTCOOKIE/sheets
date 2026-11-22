@@ -44,7 +44,21 @@ interface Change {
   after?: WorkbookCell;
 }
 
+/** What a tab remembers about its look besides cell contents (stored with the tab's first chunk). */
+export interface TabLayout {
+  columnWidths?: Record<number, number>;
+  rowHeights?: Record<number, number>;
+  hiddenRows?: number[];
+  hiddenColumns?: number[];
+  frozen?: { rows: number; columns: number };
+  merges?: { r: number; c: number; rs: number; cs: number }[];
+  borders?: { r1: number; c1: number; r2: number; c2: number; type: "all" | "outside" | "inside" | "top" | "bottom" | "left" | "right" | "none"; color?: string; style?: string }[];
+}
+
+const LAYOUT_KEYS = ["columnWidths", "rowHeights", "hiddenRows", "hiddenColumns", "frozen", "merges", "borders"] as const;
+
 export interface BigTab {
+  layout: TabLayout;
   name: string;
   chunks: ChunkEntry[];
   /** Chunk list stored in an index blob (must be re-uploaded when a chunk changes). */
@@ -91,6 +105,7 @@ export class BigSheetStore {
         rows: last ? last.rowStart + last.rowCount : 0,
         cols: 26,
         colIds: [],
+        layout: {},
       });
     }
     await Promise.all(
@@ -100,6 +115,7 @@ export class BigSheetStore {
         tab.rows = Math.max(tab.rows, head.rowCount ?? 0, 100);
         tab.cols = Math.max(tab.cols, head.colCount ?? 0, this.root.tabs[index].cols?.length ?? 0);
         tab.colIds = padCols(this.root.tabs[index].cols, tab.cols);
+        for (const key of LAYOUT_KEYS) if (head[key] !== undefined) (tab.layout as Record<string, unknown>)[key] = head[key];
       }),
     );
   }
@@ -275,6 +291,28 @@ export class BigSheetStore {
     const before = this.rawCell(tab, row, col);
     if (JSON.stringify(before) === JSON.stringify(cell)) return;
     this.apply([{ tab, row, col, before, after: cell }], "after");
+  }
+
+  /**
+   * Changes what a tab remembers about its look (sizes, hidden rows, frozen panes). It is stored in
+   * the tab's first chunk, which is then saved with the next save. Not an undo step.
+   */
+  async setLayout(tab: number, patch: Partial<TabLayout>): Promise<void> {
+    const body = await this.load(tab, 0);
+    const info = this.tabs[tab];
+    for (const key of LAYOUT_KEYS) {
+      if (!(key in patch)) continue;
+      const value = patch[key];
+      if (value === undefined) {
+        delete body[key];
+        delete info.layout[key];
+      } else {
+        body[key] = value;
+        (info.layout as Record<string, unknown>)[key] = value;
+      }
+    }
+    this.dirty.add(this.key(tab, 0));
+    this.emit();
   }
 
   /** Chunks currently in memory, as [tab, chunk]. */

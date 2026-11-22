@@ -21,3 +21,5 @@ export {
   type Selection,
 } from "./selection";
 export { Grid, LIGHT_THEME, columnName, type GridCell, type GridCellStyle, type GridData, type GridOptions, type GridTheme } from "./grid";
+export { MergeIndex, type Merge } from "./merges";
+export { addBorder, edgesIn, type Border, type BorderType, type Edges } from "./borders";

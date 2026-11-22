@@ -3766,3 +3766,5 @@ pre {
 
 .sheet-card-stats { display: inline-flex; gap: 6px; align-items: center; }
 .sheet-card-stats > span + span::before { content: "·"; margin-right: 6px; opacity: 0.6; }
+.big-tool.is-select { gap: 2px; }
+.big-tool.is-select .big-tool-select { width: 118px; border: 0; padding: 0 2px; cursor: pointer; }

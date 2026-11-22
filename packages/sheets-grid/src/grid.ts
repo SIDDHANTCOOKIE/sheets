@@ -12,9 +12,12 @@ import {
   wholeRow,
   type Cell,
   type Direction,
+  type Range,
   type Selection,
 } from "./selection";
-import { SizeIndex } from "./sizes";
+import { edgeKey, edgesIn, type Border, type EdgeStyle } from "./borders";
+import { MergeIndex, type Merge } from "./merges";
+import { SizeIndex, type SizeOverride } from "./sizes";
 import { scrollExtent, toScrollPx, toSheetPx, visible } from "./viewport";
 
 export interface GridCellStyle {
@@ -84,6 +87,15 @@ export interface GridOptions {
   onSelect?(selection: Selection): void;
   /** Delete/Backspace on the selection. */
   onClear?(selection: Selection): void;
+  /**
+   * Ctrl+C / Ctrl+X on the last selected range. Return the text for the clipboard (or a promise of it
+   * when cells still have to load); return undefined to do nothing. `cut` is true for Ctrl+X.
+   */
+  onCopy?(range: Range, cut: boolean): string | Promise<string | undefined> | undefined;
+  /** Ctrl+V: the clipboard's text and the selection it goes into. */
+  onPaste?(text: string, selection: Selection): void;
+  /** Ctrl+D (down) / Ctrl+R (right). */
+  onFill?(direction: "down" | "right", selection: Selection): void;
   /** Cells to look at for Ctrl+arrow (does the cell hold anything?). */
   hasData?(row: number, col: number): boolean;
   onResize?(kind: "row" | "col", index: number, size: number): void;
@@ -97,10 +109,24 @@ export function columnName(index: number): string {
 
 const MIN_SIZE = 8;
 
+/** A run of rows (or columns) drawn together: their pixel positions and the screen strip they may paint in. */
+interface Band {
+  first: number;
+  end: number;
+  /** Screen position (px) of each index from `first`. */
+  pos: number[];
+  start: number;
+  stop: number;
+}
+
 export class Grid {
   readonly rows: SizeIndex;
   readonly cols: SizeIndex;
   selection: Selection | null = null;
+  frozenRows = 0;
+  frozenCols = 0;
+  readonly merges = new MergeIndex();
+  private borders: readonly Border[] = [];
 
   private readonly options: GridOptions;
   private readonly theme: GridTheme;
@@ -153,6 +179,10 @@ export class Grid {
     this.scroller.addEventListener("pointerup", this.onPointerUp);
     this.scroller.addEventListener("dblclick", this.onDoubleClick);
     this.root.addEventListener("keydown", this.onKeyDown);
+    // Firefox sends clipboard events to the page, not to the focused element, so listen on the document.
+    document.addEventListener("copy", this.onCopy);
+    document.addEventListener("cut", this.onCopy);
+    document.addEventListener("paste", this.onPaste);
     this.observer = new ResizeObserver(() => this.resize());
     this.observer.observe(this.root);
     this.attach(this.data);
@@ -163,8 +193,14 @@ export class Grid {
   setData(data: GridData): void {
     this.unsubscribe?.();
     this.data = data;
+    this.rows.replace([]);
+    this.cols.replace([]);
     this.rows.setLength(data.rowCount);
     this.cols.setLength(data.colCount);
+    this.frozenRows = 0;
+    this.frozenCols = 0;
+    this.merges.set([]);
+    this.borders = [];
     this.selection = null;
     this.scroller.scrollTop = 0;
     this.scroller.scrollLeft = 0;
@@ -181,6 +217,9 @@ export class Grid {
     this.unsubscribe?.();
     this.observer?.disconnect();
     cancelAnimationFrame(this.frame);
+    document.removeEventListener("copy", this.onCopy);
+    document.removeEventListener("cut", this.onCopy);
+    document.removeEventListener("paste", this.onPaste);
     this.root.remove();
   }
 
@@ -198,47 +237,82 @@ export class Grid {
   };
 
   select(selection: Selection | null, reveal = true): void {
-    this.selection = selection;
+    // A selection never cuts a merged block in half.
+    this.selection = selection && this.merges.size > 0 ? this.merges.expandSelection(selection) : selection;
+    selection = this.selection;
     if (selection && reveal) this.reveal(selection.active);
     if (selection) this.options.onSelect?.(selection);
     this.schedule();
   }
 
-  /** Scrolls so `cell` is fully on screen. */
+  /** Scrolls so `cell` is fully on screen (cells in the frozen rows and columns are always on screen). */
   reveal(cell: Cell): void {
-    const viewW = this.width - this.headW;
-    const viewH = this.height - this.headH;
-    const rowsTotal = this.rows.total;
-    const colsTotal = this.cols.total;
-    const top = toSheetPx(this.scroller.scrollTop, rowsTotal, viewH);
-    const left = toSheetPx(this.scroller.scrollLeft, colsTotal, viewW);
-    const y = this.rows.offset(cell.row);
-    const x = this.cols.offset(cell.col);
-    if (y < top) this.scroller.scrollTop = toScrollPx(y, rowsTotal, viewH);
-    else if (y + this.rows.size(cell.row) > top + viewH) {
-      this.scroller.scrollTop = toScrollPx(y + this.rows.size(cell.row) - viewH, rowsTotal, viewH);
+    const v = this.view();
+    if (cell.row >= v.fr) {
+      const win = Math.max(1, v.viewH - v.fh);
+      const total = this.rows.total - v.fh;
+      const y = this.rows.offset(cell.row) - v.fh;
+      const top = v.rowTop - v.fh;
+      const size = this.rows.size(cell.row);
+      if (y < top) this.scroller.scrollTop = toScrollPx(y, total, win);
+      else if (y + size > top + win) this.scroller.scrollTop = toScrollPx(y + size - win, total, win);
     }
-    if (x < left) this.scroller.scrollLeft = toScrollPx(x, colsTotal, viewW);
-    else if (x + this.cols.size(cell.col) > left + viewW) {
-      this.scroller.scrollLeft = toScrollPx(x + this.cols.size(cell.col) - viewW, colsTotal, viewW);
+    if (cell.col >= v.fc) {
+      const win = Math.max(1, v.viewW - v.fw);
+      const total = this.cols.total - v.fw;
+      const x = this.cols.offset(cell.col) - v.fw;
+      const left = v.left - v.fw;
+      const size = this.cols.size(cell.col);
+      if (x < left) this.scroller.scrollLeft = toScrollPx(x, total, win);
+      else if (x + size > left + win) this.scroller.scrollLeft = toScrollPx(x + size - win, total, win);
     }
   }
 
   /** Where `cell` is on screen, relative to the grid's top-left corner (for placing an editor). */
   cellRect(cell: Cell): { x: number; y: number; width: number; height: number } {
-    const top = toSheetPx(this.scroller.scrollTop, this.rows.total, this.height - this.headH);
-    const left = toSheetPx(this.scroller.scrollLeft, this.cols.total, this.width - this.headW);
+    const v = this.view();
+    const block = this.merges.at(cell.row, cell.col);
+    const row = block?.r ?? cell.row;
+    const col = block?.c ?? cell.col;
     return {
-      x: this.headW + this.cols.offset(cell.col) - left,
-      y: this.headH + this.rows.offset(cell.row) - top,
-      width: this.cols.size(cell.col),
-      height: this.rows.size(cell.row),
+      x: this.headW + (col < v.fc ? this.cols.offset(col) : v.fw + this.cols.offset(col) - v.left),
+      y: this.headH + (row < v.fr ? this.rows.offset(row) : v.fh + this.rows.offset(row) - v.rowTop),
+      width: block ? this.cols.offset(block.c + block.cs) - this.cols.offset(block.c) : this.cols.size(col),
+      height: block ? this.rows.offset(block.r + block.rs) - this.rows.offset(block.r) : this.rows.size(row),
     };
   }
 
   scrollToRow(row: number): void {
     const target = Math.max(0, Math.min(this.rows.length - 1, row));
-    this.scroller.scrollTop = toScrollPx(this.rows.offset(target), this.rows.total, this.height - this.headH);
+    const v = this.view();
+    this.scroller.scrollTop = toScrollPx(Math.max(0, this.rows.offset(target) - v.fh), this.rows.total - v.fh, Math.max(1, v.viewH - v.fh));
+    this.schedule();
+  }
+
+  /** Keeps the first `rows` rows and `cols` columns on screen while the rest scrolls. */
+  setFrozen(rows: number, cols: number): void {
+    this.frozenRows = Math.max(0, Math.floor(rows));
+    this.frozenCols = Math.max(0, Math.floor(cols));
+    this.updateSpacer();
+    this.schedule();
+  }
+
+  /** Cells merged into one (top-left cell, rows and columns spanned). */
+  setMerges(merges: readonly Merge[]): void {
+    this.merges.set(merges);
+    this.schedule();
+  }
+
+  /** Borders, as the list of "put this border on that range" requests in the order they were made. */
+  setBorders(borders: readonly Border[]): void {
+    this.borders = borders;
+    this.schedule();
+  }
+
+  /** Replaces the row heights / column widths that differ from the default (size 0 hides). Used to apply what was saved with the sheet. */
+  setSizes(kind: "row" | "col", overrides: readonly SizeOverride[]): void {
+    (kind === "row" ? this.rows : this.cols).replace(overrides);
+    this.updateSpacer();
     this.schedule();
   }
 
@@ -258,27 +332,70 @@ export class Grid {
     this.schedule();
   }
 
-  /** The scroll area is as long as the sheet (capped), offset by the headers the canvas draws over. */
+  /** Frozen rows/columns as they apply now (ignored when they would leave no room to scroll). */
+  private frozenPx() {
+    const viewW = this.width - this.headW;
+    const viewH = this.height - this.headH;
+    let fr = Math.min(this.frozenRows, this.rows.length);
+    let fc = Math.min(this.frozenCols, this.cols.length);
+    let fh = this.rows.offset(fr);
+    let fw = this.cols.offset(fc);
+    if (fh > viewH - 30) {
+      fr = 0;
+      fh = 0;
+    }
+    if (fw > viewW - 30) {
+      fc = 0;
+      fw = 0;
+    }
+    return { fr, fc, fh, fw };
+  }
+
+  /** The scroll area is as long as the part of the sheet that scrolls (capped), offset by the headers and frozen rows. */
   private updateSpacer(): void {
     // Wide enough for the biggest row number ("25,000,000").
     this.headW = Math.max(this.baseHeadW, Math.ceil(this.rows.length.toLocaleString().length * 7 + 16));
     const viewW = this.width - this.headW;
     const viewH = this.height - this.headH;
-    this.spacer.style.height = `${scrollExtent(this.rows.total, viewH) + this.headH}px`;
-    this.spacer.style.width = `${scrollExtent(this.cols.total, viewW) + this.headW}px`;
+    const { fh, fw } = this.frozenPx();
+    this.spacer.style.height = `${scrollExtent(this.rows.total - fh, Math.max(1, viewH - fh)) + this.headH + fh}px`;
+    this.spacer.style.width = `${scrollExtent(this.cols.total - fw, Math.max(1, viewW - fw)) + this.headW + fw}px`;
   }
 
   private view() {
     const viewW = this.width - this.headW;
     const viewH = this.height - this.headH;
-    const top = toSheetPx(this.scroller.scrollTop, this.rows.total, viewH);
-    const left = toSheetPx(this.scroller.scrollLeft, this.cols.total, viewW);
-    return {
-      viewW,
-      viewH,
-      rows: visible(this.rows, top, viewH),
-      cols: visible(this.cols, left, viewW),
+    const { fr, fc, fh, fw } = this.frozenPx();
+    const winH = Math.max(1, viewH - fh);
+    const winW = Math.max(1, viewW - fw);
+    /** Sheet position shown just below the frozen rows / right of the frozen columns. */
+    const rowTop = fh + toSheetPx(this.scroller.scrollTop, this.rows.total - fh, winH);
+    const left = fw + toSheetPx(this.scroller.scrollLeft, this.cols.total - fw, winW);
+    const rows = visible(this.rows, rowTop, winH);
+    const cols = visible(this.cols, left, winW);
+    if (rows.first < fr) Object.assign(rows, { first: fr, shift: 0 });
+    if (cols.first < fc) Object.assign(cols, { first: fc, shift: 0 });
+    return { viewW, viewH, fr, fc, fh, fw, rowTop, left, rows, cols };
+  }
+
+  /** The row and column bands on screen: the frozen ones (if any) and the scrolling ones, each with pixel positions. */
+  private bands(v: ReturnType<Grid["view"]>): { rowBands: Band[]; colBands: Band[] } {
+    const make = (sizes: SizeIndex, first: number, end: number, origin: number, start: number, stop: number): Band => {
+      const pos: number[] = [];
+      let at = origin;
+      for (let i = first; i < end; i++) {
+        pos.push(at);
+        at += sizes.size(i);
+      }
+      return { first, end, pos, start, stop };
     };
+    const rowBands: Band[] = [];
+    const colBands: Band[] = [];
+    if (v.fr > 0) rowBands.push(make(this.rows, 0, v.fr, this.headH, this.headH, this.headH + v.fh));
+    rowBands.push(make(this.rows, v.rows.first, v.rows.end, this.headH + v.fh - v.rows.shift, this.headH + v.fh, this.headH + v.viewH));
+    if (v.fc > 0) colBands.push(make(this.cols, 0, v.fc, this.headW, this.headW, this.headW + v.fw));
+    colBands.push(make(this.cols, v.cols.first, v.cols.end, this.headW + v.fw - v.cols.shift, this.headW + v.fw, this.headW + v.viewW));
+    return { rowBands, colBands };
   }
 
   // --- drawing ----------------------------------------------------------------------------
@@ -291,43 +408,54 @@ export class Grid {
       this.updateSpacer();
     }
     const { ctx, theme } = this;
-    const { viewW, viewH, rows, cols } = this.view();
+    const v = this.view();
+    const { rowBands, colBands } = this.bands(v);
     const fonts = (style: GridCellStyle | undefined) =>
       `${style?.italic ? "italic " : ""}${style?.bold ? "700 " : ""}${Math.min(style?.fontSize ?? 11, 24) * (96 / 72)}px ${style?.fontFamily ? `${style.fontFamily}, ` : ""}${theme.font}`;
 
-    this.data.ensure?.(rows.first, rows.end);
+    if (v.fr > 0) this.data.ensure?.(0, v.fr);
+    this.data.ensure?.(v.rows.first, v.rows.end);
 
     ctx.clearRect(0, 0, this.width, this.height);
     ctx.fillStyle = theme.background;
     ctx.fillRect(0, 0, this.width, this.height);
-
-    // Positions of the visible rows/columns (hidden ones have size 0 and are skipped).
-    const ys: number[] = [];
-    let y = this.headH - rows.shift;
-    for (let r = rows.first; r < rows.end; r++) {
-      ys.push(y);
-      y += this.rows.size(r);
-    }
-    const xs: number[] = [];
-    let x = this.headW - cols.shift;
-    for (let c = cols.first; c < cols.end; c++) {
-      xs.push(x);
-      x += this.cols.size(c);
-    }
-
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(this.headW, this.headH, viewW, viewH);
-    ctx.clip();
     ctx.textBaseline = "middle";
-    for (let r = rows.first; r < rows.end; r++) {
+
+    // Each block (frozen corner, frozen rows, frozen columns, the scrolling part) is clipped to itself.
+    for (const rb of rowBands) {
+      for (const cb of colBands) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(cb.start, rb.start, cb.stop - cb.start, rb.stop - rb.start);
+        ctx.clip();
+        this.drawBlock(rb, cb, fonts);
+        this.drawSelection(rb, cb);
+        ctx.restore();
+      }
+    }
+    // A heavier line marks where the frozen part ends.
+    ctx.fillStyle = theme.headText;
+    if (v.fr > 0) ctx.fillRect(this.headW, this.headH + v.fh - 1, v.viewW, 2);
+    if (v.fc > 0) ctx.fillRect(this.headW + v.fw - 1, this.headH, 2, v.viewH);
+
+    this.drawHeaders(rowBands, colBands);
+  }
+
+  /** Cells and grid lines of one block. */
+  private drawBlock(rb: Band, cb: Band, fonts: (style: GridCellStyle | undefined) => string): void {
+    const { ctx, theme } = this;
+    // Merged blocks reaching into this block; their cells are drawn as one after the grid lines.
+    const blocks = this.merges.intersecting(rb.first, cb.first, rb.end - 1, cb.end - 1);
+    const covered = (r: number, c: number) => blocks.some((m) => r >= m.r && r < m.r + m.rs && c >= m.c && c < m.c + m.cs);
+    for (let r = rb.first; r < rb.end; r++) {
       const h = this.rows.size(r);
       if (h === 0) continue;
-      const top = ys[r - rows.first];
-      for (let c = cols.first; c < cols.end; c++) {
+      const top = rb.pos[r - rb.first];
+      for (let c = cb.first; c < cb.end; c++) {
         const w = this.cols.size(c);
         if (w === 0) continue;
-        const left = xs[c - cols.first];
+        if (blocks.length > 0 && covered(r, c)) continue;
+        const left = cb.pos[c - cb.first];
         const cell = this.data.cell(r, c);
         const style = cell?.style;
         if (cell === undefined) {
@@ -340,27 +468,74 @@ export class Grid {
         if (cell?.text) this.drawText(cell, left, top, w, h, fonts(style));
       }
     }
-    // Grid lines.
     ctx.strokeStyle = theme.line;
     ctx.lineWidth = 1;
     ctx.beginPath();
-    for (let i = 0; i < ys.length; i++) {
-      if (this.rows.size(rows.first + i) === 0) continue;
-      const line = Math.round(ys[i] + this.rows.size(rows.first + i)) - 0.5;
-      ctx.moveTo(this.headW, line);
-      ctx.lineTo(this.headW + viewW, line);
+    for (let i = 0; i < rb.pos.length; i++) {
+      const size = this.rows.size(rb.first + i);
+      if (size === 0) continue;
+      const line = Math.round(rb.pos[i] + size) - 0.5;
+      ctx.moveTo(cb.start, line);
+      ctx.lineTo(cb.stop, line);
     }
-    for (let i = 0; i < xs.length; i++) {
-      if (this.cols.size(cols.first + i) === 0) continue;
-      const line = Math.round(xs[i] + this.cols.size(cols.first + i)) - 0.5;
-      ctx.moveTo(line, this.headH);
-      ctx.lineTo(line, this.headH + viewH);
+    for (let i = 0; i < cb.pos.length; i++) {
+      const size = this.cols.size(cb.first + i);
+      if (size === 0) continue;
+      const line = Math.round(cb.pos[i] + size) - 0.5;
+      ctx.moveTo(line, rb.start);
+      ctx.lineTo(line, rb.stop);
     }
     ctx.stroke();
-    this.drawSelection(rows, cols, ys, xs);
-    ctx.restore();
+    for (const m of blocks) {
+      const left = cb.pos[0] + this.cols.offset(m.c) - this.cols.offset(cb.first);
+      const top = rb.pos[0] + this.rows.offset(m.r) - this.rows.offset(rb.first);
+      const w = this.cols.offset(m.c + m.cs) - this.cols.offset(m.c);
+      const h = this.rows.offset(m.r + m.rs) - this.rows.offset(m.r);
+      const cell = this.data.cell(m.r, m.c);
+      ctx.fillStyle = cell?.style?.background ?? (cell === undefined ? theme.loading : theme.background);
+      ctx.fillRect(left, top, w, h);
+      if (cell?.text) this.drawText(cell, left, top, w, h, fonts(cell.style));
+      ctx.strokeStyle = theme.line;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(Math.round(left) - 0.5, Math.round(top) - 0.5, Math.round(w) + 1, Math.round(h) + 1);
+    }
+    if (this.borders.length > 0) this.drawBorders(rb, cb, blocks);
+  }
 
-    this.drawHeaders(rows, cols, ys, xs, viewW, viewH);
+  /** The borders in one block, drawn over the grid lines. */
+  private drawBorders(rb: Band, cb: Band, blocks: readonly Merge[]): void {
+    const { ctx } = this;
+    const edges = edgesIn(this.borders, rb.first, cb.first, rb.end - 1, cb.end - 1);
+    if (edges.h.size === 0 && edges.v.size === 0) return;
+    const lineAt = (map: Map<number, EdgeStyle>, row: number, col: number, x1: number, y1: number, x2: number, y2: number) => {
+      const edge = map.get(edgeKey(row, col));
+      if (!edge) return;
+      // Lines inside a merged block are not drawn.
+      const horizontal = map === edges.h;
+      if (blocks.some((m) => (horizontal ? row > m.r && row < m.r + m.rs && col >= m.c && col < m.c + m.cs : col > m.c && col < m.c + m.cs && row >= m.r && row < m.r + m.rs))) return;
+      ctx.strokeStyle = edge.color;
+      ctx.lineWidth = edge.style === "thick" ? 3 : edge.style === "medium" ? 2 : 1;
+      ctx.setLineDash(edge.style === "dashed" ? [5, 3] : edge.style === "dotted" ? [1.5, 2.5] : []);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    };
+    const rowY = (r: number) => Math.round(rb.pos[0] + this.rows.offset(r) - this.rows.offset(rb.first)) - 0.5;
+    const colX = (c: number) => Math.round(cb.pos[0] + this.cols.offset(c) - this.cols.offset(cb.first)) - 0.5;
+    for (let r = rb.first; r <= rb.end; r++) {
+      for (let c = cb.first; c < cb.end; c++) {
+        if (this.cols.size(c) === 0) continue;
+        lineAt(edges.h, r, c, colX(c) + 0.5, rowY(r), colX(c + 1) + 0.5, rowY(r));
+      }
+    }
+    for (let c = cb.first; c <= cb.end; c++) {
+      for (let r = rb.first; r < rb.end; r++) {
+        if (this.rows.size(r) === 0) continue;
+        lineAt(edges.v, r, c, colX(c), rowY(r) + 0.5, colX(c), rowY(r + 1) + 0.5);
+      }
+    }
+    ctx.setLineDash([]);
   }
 
   private drawText(cell: GridCell, left: number, top: number, w: number, h: number, font: string): void {
@@ -390,29 +565,24 @@ export class Grid {
     ctx.restore();
   }
 
-  private drawSelection(
-    rows: { first: number; end: number },
-    cols: { first: number; end: number },
-    ys: number[],
-    xs: number[],
-  ): void {
+  private drawSelection(rb: Band, cb: Band): void {
     const sel = this.selection;
     if (!sel) return;
     const { ctx, theme } = this;
     const rectOf = (r1: number, c1: number, r2: number, c2: number) => {
-      // Rows/columns outside the window are clamped to its edge so a huge range still draws.
-      const ra = Math.max(r1, rows.first);
-      const rb = Math.min(r2, rows.end - 1);
-      const ca = Math.max(c1, cols.first);
-      const cb = Math.min(c2, cols.end - 1);
-      if (ra > rb || ca > cb) return null;
-      const top = ys[ra - rows.first];
-      const left = xs[ca - cols.first];
+      // Rows/columns outside the block are clamped to its edge so a huge range still draws.
+      const ra = Math.max(r1, rb.first);
+      const rz = Math.min(r2, rb.end - 1);
+      const ca = Math.max(c1, cb.first);
+      const cz = Math.min(c2, cb.end - 1);
+      if (ra > rz || ca > cz) return null;
+      const top = rb.pos[ra - rb.first];
+      const left = cb.pos[ca - cb.first];
       return {
         left,
         top,
-        width: xs[cb - cols.first] + this.cols.size(cb) - left,
-        height: ys[rb - rows.first] + this.rows.size(rb) - top,
+        width: cb.pos[cz - cb.first] + this.cols.size(cz) - left,
+        height: rb.pos[rz - rb.first] + this.rows.size(rz) - top,
       };
     };
     for (const range of sel.ranges) {
@@ -425,7 +595,10 @@ export class Grid {
       ctx.strokeRect(rect.left + 1, rect.top + 1, rect.width - 2, rect.height - 2);
     }
     // The active cell is drawn without the tint so it reads as "where typing goes".
-    const active = rectOf(sel.active.row, sel.active.col, sel.active.row, sel.active.col);
+    const block = this.merges.at(sel.active.row, sel.active.col);
+    const active = block
+      ? rectOf(block.r, block.c, block.r + block.rs - 1, block.c + block.cs - 1)
+      : rectOf(sel.active.row, sel.active.col, sel.active.row, sel.active.col);
     if (active) {
       ctx.fillStyle = theme.background;
       const cell = this.data.cell(sel.active.row, sel.active.col);
@@ -436,14 +609,7 @@ export class Grid {
     }
   }
 
-  private drawHeaders(
-    rows: { first: number; end: number },
-    cols: { first: number; end: number },
-    ys: number[],
-    xs: number[],
-    viewW: number,
-    viewH: number,
-  ): void {
+  private drawHeaders(rowBands: Band[], colBands: Band[]): void {
     const { ctx, theme } = this;
     const sel = this.selection;
     const rowSelected = (r: number) => !!sel?.ranges.some((g) => r >= g.r1 && r <= g.r2);
@@ -452,39 +618,43 @@ export class Grid {
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
 
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(0, this.headH, this.headW, viewH);
-    ctx.clip();
-    for (let r = rows.first; r < rows.end; r++) {
-      const h = this.rows.size(r);
-      if (h === 0) continue;
-      const top = ys[r - rows.first];
-      ctx.fillStyle = rowSelected(r) ? theme.headSelected : theme.headBackground;
-      ctx.fillRect(0, top, this.headW, h);
-      ctx.fillStyle = theme.headText;
-      ctx.fillText((r + 1).toLocaleString(), this.headW / 2, top + h / 2);
-      ctx.fillStyle = theme.line;
-      ctx.fillRect(0, Math.round(top + h) - 1, this.headW, 1);
+    for (const band of rowBands) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, band.start, this.headW, band.stop - band.start);
+      ctx.clip();
+      for (let r = band.first; r < band.end; r++) {
+        const h = this.rows.size(r);
+        if (h === 0) continue;
+        const top = band.pos[r - band.first];
+        ctx.fillStyle = rowSelected(r) ? theme.headSelected : theme.headBackground;
+        ctx.fillRect(0, top, this.headW, h);
+        ctx.fillStyle = theme.headText;
+        ctx.fillText((r + 1).toLocaleString(), this.headW / 2, top + h / 2);
+        ctx.fillStyle = theme.line;
+        ctx.fillRect(0, Math.round(top + h) - 1, this.headW, 1);
+      }
+      ctx.restore();
     }
-    ctx.restore();
 
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(this.headW, 0, viewW, this.headH);
-    ctx.clip();
-    for (let c = cols.first; c < cols.end; c++) {
-      const w = this.cols.size(c);
-      if (w === 0) continue;
-      const left = xs[c - cols.first];
-      ctx.fillStyle = colSelected(c) ? theme.headSelected : theme.headBackground;
-      ctx.fillRect(left, 0, w, this.headH);
-      ctx.fillStyle = theme.headText;
-      ctx.fillText(columnName(c), left + w / 2, this.headH / 2);
-      ctx.fillStyle = theme.line;
-      ctx.fillRect(Math.round(left + w) - 1, 0, 1, this.headH);
+    for (const band of colBands) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(band.start, 0, band.stop - band.start, this.headH);
+      ctx.clip();
+      for (let c = band.first; c < band.end; c++) {
+        const w = this.cols.size(c);
+        if (w === 0) continue;
+        const left = band.pos[c - band.first];
+        ctx.fillStyle = colSelected(c) ? theme.headSelected : theme.headBackground;
+        ctx.fillRect(left, 0, w, this.headH);
+        ctx.fillStyle = theme.headText;
+        ctx.fillText(columnName(c), left + w / 2, this.headH / 2);
+        ctx.fillStyle = theme.line;
+        ctx.fillRect(Math.round(left + w) - 1, 0, 1, this.headH);
+      }
+      ctx.restore();
     }
-    ctx.restore();
 
     ctx.fillStyle = theme.headBackground;
     ctx.fillRect(0, 0, this.headW, this.headH);
@@ -500,29 +670,30 @@ export class Grid {
     const rect = this.root.getBoundingClientRect();
     const px = clientX - rect.left;
     const py = clientY - rect.top;
-    const { rows, cols } = this.view();
-    const top = toSheetPx(this.scroller.scrollTop, this.rows.total, this.height - this.headH);
-    const left = toSheetPx(this.scroller.scrollLeft, this.cols.total, this.width - this.headW);
-    void rows;
-    void cols;
+    const v = this.view();
+    const relY = Math.max(0, py - this.headH);
+    const relX = Math.max(0, px - this.headW);
+    // Sheet position under the pointer: frozen rows/columns map 1:1, the rest follows the scroll.
+    const sheetY = relY < v.fh ? relY : v.rowTop + (relY - v.fh);
+    const sheetX = relX < v.fw ? relX : v.left + (relX - v.fw);
     const onColHead = py < this.headH;
     const onRowHead = px < this.headW;
-    const row = this.rows.indexAt(top + Math.max(0, py - this.headH));
-    const col = this.cols.indexAt(left + Math.max(0, px - this.headW));
-    return { px, py, row, col, onColHead, onRowHead, top, left };
+    const row = this.rows.indexAt(sheetY);
+    const col = this.cols.indexAt(sheetX);
+    return { px, py, row, col, onColHead, onRowHead, sheetX, sheetY };
   }
 
   /** The edge of a row/column header the pointer is on (within 4px), for resizing. */
   private edge(hit: ReturnType<Grid["hit"]>): { axis: "row" | "col"; index: number } | null {
     if (hit.onColHead && !hit.onRowHead) {
-      const x = hit.px - this.headW + hit.left;
+      const x = hit.sheetX;
       const end = this.cols.offset(hit.col) + this.cols.size(hit.col);
       const startEdge = this.cols.offset(hit.col);
       if (Math.abs(x - end) <= 4) return { axis: "col", index: hit.col };
       if (Math.abs(x - startEdge) <= 4 && hit.col > 0) return { axis: "col", index: this.cols.nextVisible(hit.col - 1, -1) };
     }
     if (hit.onRowHead && !hit.onColHead) {
-      const y = hit.py - this.headH + hit.top;
+      const y = hit.sheetY;
       const end = this.rows.offset(hit.row) + this.rows.size(hit.row);
       const startEdge = this.rows.offset(hit.row);
       if (Math.abs(y - end) <= 4) return { axis: "row", index: hit.row };
@@ -618,10 +789,23 @@ export class Grid {
       }
       return;
     }
+    if (mod && !event.shiftKey && !event.altKey && (event.key.toLowerCase() === "d" || event.key.toLowerCase() === "r")) {
+      event.preventDefault(); // the browser would bookmark the page
+      this.options.onFill?.(event.key.toLowerCase() === "d" ? "down" : "right", sel);
+      return;
+    }
     const dir = arrows[event.key];
     if (dir) {
       event.preventDefault();
-      this.select(move(bounds, sel, dir, { extend: event.shiftKey, jump: mod, hasData: this.options.hasData }));
+      // From a merged block, moving starts at the block's edge in that direction.
+      const block = !event.shiftKey ? this.merges.at(sel.active.row, sel.active.col) : undefined;
+      const from: Selection = block
+        ? single({
+            row: dir === "down" ? block.r + block.rs - 1 : block.r,
+            col: dir === "right" ? block.c + block.cs - 1 : block.c,
+          })
+        : sel;
+      this.select(move(bounds, from, dir, { extend: event.shiftKey, jump: mod, hasData: this.options.hasData }));
       return;
     }
     const page = Math.max(1, Math.floor((this.height - this.headH) / (this.rows.size(sel.active.row) || 30)) - 1);
@@ -669,6 +853,37 @@ export class Grid {
           this.options.onEdit?.(sel.active, event.key);
         }
     }
+  };
+
+  // --- clipboard ---------------------------------------------------------------------------
+
+  /** Does the grid have the keyboard (and not a text box on top of it)? */
+  private hasFocus(): boolean {
+    const active = document.activeElement;
+    return active === this.root || (!!active && this.root.contains(active));
+  }
+
+  private onCopy = (event: ClipboardEvent): void => {
+    const sel = this.selection;
+    if (!sel || !this.options.onCopy || !this.hasFocus()) return;
+    const range = sel.ranges[sel.ranges.length - 1];
+    const result = this.options.onCopy(range, event.type === "cut");
+    if (result === undefined) return;
+    event.preventDefault();
+    if (typeof result === "string") {
+      event.clipboardData?.setData("text/plain", result);
+    } else {
+      // The cells had to load first, so the text arrives after the event; write it the async way.
+      void result.then((text) => (text === undefined ? undefined : navigator.clipboard?.writeText(text))).catch(() => {});
+    }
+  };
+
+  private onPaste = (event: ClipboardEvent): void => {
+    const sel = this.selection;
+    if (!sel || !this.options.onPaste || !this.hasFocus()) return;
+    const text = event.clipboardData?.getData("text/plain");
+    event.preventDefault();
+    if (text !== undefined && text !== "") this.options.onPaste(text, sel);
   };
 
   /** After an edit commits: Enter moves down within the selection, Tab to the right. */

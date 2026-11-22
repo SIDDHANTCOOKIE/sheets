@@ -2,11 +2,21 @@
 // rows on screen and only the chunks holding them are downloaded (BigSheetStore), so an 11M-cell
 // sheet scrolls in a normal browser tab. Editing is switched by BIG_SHEET_EDITING.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { columnName, Grid, type GridData, type Selection } from "@formstr/sheets-grid";
+import { addBorder, columnName, Grid, type BorderType, type GridData, type Selection } from "@formstr/sheets-grid";
 import { AlertTriangle, Loader2, Save } from "lucide-react";
 import { BIG_SHEET_EDITING } from "../lib/constants";
 import { BigSheetStore } from "../lib/v2/bigSheet";
 import { calculateTyped, FormulaIndex, pointRect, refreshDependents, type ChangedRect } from "../lib/v2/bigFormulas";
+import {
+  copyBlock,
+  copyBlockNow,
+  fillArea,
+  fromTsv,
+  isLoadedArea,
+  pasteBlock,
+  pasteText,
+  type Block,
+} from "../lib/v2/bigClipboard";
 import type { SheetRootV2 } from "../lib/v2/root";
 import { uploadProgress } from "../lib/v2/progress";
 import type { LibraryEntry } from "../lib/types";
@@ -28,6 +38,20 @@ function restyle(cell: WorkbookCell | undefined, patch: StylePatch): WorkbookCel
   const style = { ...rest.style, ...patch };
   for (const key of Object.keys(style) as (keyof typeof style)[]) if (style[key] === undefined) delete style[key];
   return { ...rest, style };
+}
+
+/** Gives the grid what the tab saved about its look: column widths, row heights, hidden rows/columns, frozen panes. */
+function applyLayout(grid: Grid, store: BigSheetStore, tab: number): void {
+  const layout = store.tabs[tab]?.layout ?? {};
+  const overrides = (sizes?: Record<number, number>, hidden?: number[]) => [
+    ...Object.entries(sizes ?? {}).map(([index, size]) => ({ index: Number(index), size })),
+    ...(hidden ?? []).map((index) => ({ index, size: 0 })),
+  ];
+  grid.setSizes("col", overrides(layout.columnWidths, layout.hiddenColumns));
+  grid.setSizes("row", overrides(layout.rowHeights, layout.hiddenRows));
+  grid.setFrozen(layout.frozen?.rows ?? 0, layout.frozen?.columns ?? 0);
+  grid.setMerges(layout.merges ?? []);
+  grid.setBorders(layout.borders ?? []);
 }
 
 /** The store's tab as the grid reads it. */
@@ -76,6 +100,8 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   const gridRef = useRef<Grid | null>(null);
   /** Set by Escape so the blur that follows the input unmounting does not save the edit. */
   const cancelled = useRef(false);
+  /** The cells of the last copy, so pasting them keeps formulas and formats. */
+  const clipboard = useRef<Block | null>(null);
   const canEdit = BIG_SHEET_EDITING && !!entry.editKey;
   // The grid's callbacks are created once, so they read the latest state through these refs.
   const live = useRef({ canEdit, editing, painting, tab });
@@ -103,17 +129,22 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   // Refreshes run one after another, so two quick edits never recalculate the same cells at once.
   const refreshQueue = useRef<Promise<void>>(Promise.resolve());
   const refresh = useCallback(
-    (areas: ChangedRect[]): Promise<void> => {
+    (areas: ChangedRect[], recalcInside = false): Promise<void> => {
       const job = refreshQueue.current.then(async () => {
         try {
-          const count = await refreshDependents(store, index, areas, (done, total, phase) =>
-            setCalculating(
-              phase === "scan"
-                ? `Looking for formulas… ${done} of ${total} parts`
-                : total > 1
-                  ? `Updating formulas… ${done.toLocaleString()} of ${total.toLocaleString()}`
-                  : null,
-            ),
+          const count = await refreshDependents(
+            store,
+            index,
+            areas,
+            (done, total, phase) =>
+              setCalculating(
+                phase === "scan"
+                  ? `Looking for formulas… ${done} of ${total} parts`
+                  : total > 1
+                    ? `Updating formulas… ${done.toLocaleString()} of ${total.toLocaleString()}`
+                    : null,
+              ),
+            recalcInside,
           );
           if (count > 0) setVersion((n) => n + 1);
         } catch (error) {
@@ -156,6 +187,15 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   useEffect(() => {
     const host = hostRef.current;
     if (!ready || !host || !store.tabs[0]) return;
+    /** Clears values (keeps formats), then refreshes the formulas that read the cleared cells. */
+    const clearArea = (area: { r1: number; c1: number; r2: number; c2: number }) => {
+      if (!live.current.canEdit) return;
+      const tabNo = live.current.tab;
+      store
+        .edit(tabNo, area.r1, area.c1, area.r2, area.c2, (cell) => (cell?.style ? { style: cell.style } : undefined))
+        .then(() => refreshRef.current([{ tab: tabNo, r1: area.r1, c1: area.c1, r2: area.r2, c2: area.c2 }]))
+        .catch((error) => toast(error instanceof Error ? error.message : String(error), "error"));
+    };
     const grid = new Grid(host, {
       data: tabData(store, live.current.tab),
       onSelect: (next) => {
@@ -176,16 +216,69 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
         cancelled.current = false;
         setEditing({ row: cell.row, col: cell.col, text: initial });
       },
-      onClear: (next) => {
+      onClear: (next) => clearArea(next.ranges[next.ranges.length - 1]),
+      onResize: (kind, index, size) => {
+        // Resizing in a read-only sheet only lasts until the page is closed.
         if (!live.current.canEdit) return;
+        const tabNo = live.current.tab;
+        const layout = store.tabs[tabNo].layout;
+        const patch = kind === "col" ? { columnWidths: { ...layout.columnWidths, [index]: size } } : { rowHeights: { ...layout.rowHeights, [index]: size } };
+        store.setLayout(tabNo, patch).catch(() => {});
+      },
+      onCopy: (area, cut) => {
+        if (cut && !live.current.canEdit) return undefined;
+        const tabNo = live.current.tab;
+        const finish = (block: Block) => {
+          clipboard.current = block;
+          if (cut) clearArea(area);
+          return block.text;
+        };
+        try {
+          // Everything in memory: answer inside the copy event. Otherwise download first.
+          if (isLoadedArea(store, tabNo, area)) return finish(copyBlockNow(store, tabNo, area));
+          return copyBlock(store, tabNo, area).then(finish, (error) => {
+            toast(error instanceof Error ? error.message : String(error), "error");
+            return undefined;
+          });
+        } catch (error) {
+          toast(error instanceof Error ? error.message : String(error), "error");
+          return undefined;
+        }
+      },
+      onPaste: (text, next) => {
+        if (!live.current.canEdit) return;
+        const tabNo = live.current.tab;
         const area = next.ranges[next.ranges.length - 1];
-        store
-          .edit(live.current.tab, area.r1, area.c1, area.r2, area.c2, (cell) => (cell?.style ? { style: cell.style } : undefined))
-          .then(() => refreshRef.current([{ tab: live.current.tab, r1: area.r1, c1: area.c1, r2: area.r2, c2: area.c2 }]))
+        const copied = clipboard.current;
+        const normal = text.replace(/\r\n?/g, "\n");
+        const job =
+          copied && copied.text === normal
+            ? pasteBlock(store, tabNo, area.r1, area.c1, copied, area)
+            : pasteText(store, tabNo, area.r1, area.c1, fromTsv(normal), area);
+        job
+          .then(async (done) => {
+            const written = { tab: tabNo, ...done };
+            gridRef.current?.select({
+              ranges: [done],
+              active: { row: done.r1, col: done.c1 },
+              anchor: { row: done.r1, col: done.c1 },
+            });
+            await refreshRef.current([written], true);
+          })
+          .catch((error) => toast(error instanceof Error ? error.message : String(error), "error"));
+      },
+      onFill: (direction, next) => {
+        if (!live.current.canEdit) return;
+        const tabNo = live.current.tab;
+        fillArea(store, tabNo, next.ranges[next.ranges.length - 1], direction)
+          .then(async (done) => {
+            if (done) await refreshRef.current([{ tab: tabNo, ...done }], true);
+          })
           .catch((error) => toast(error instanceof Error ? error.message : String(error), "error"));
       },
     });
     gridRef.current = grid;
+    applyLayout(grid, store, live.current.tab);
     return () => {
       grid.destroy();
       gridRef.current = null;
@@ -199,7 +292,74 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
     setSelection(null);
     setEditing(null);
     gridRef.current?.setData(tabData(store, index));
+    if (gridRef.current) applyLayout(gridRef.current, store, index);
   };
+
+  /** Keeps the first rows/columns in view while scrolling; remembered with the sheet when it can be edited. */
+  const freeze = (rows: number, columns: number) => {
+    gridRef.current?.setFrozen(rows, columns);
+    if (canEdit) store.setLayout(tab, { frozen: rows > 0 || columns > 0 ? { rows, columns } : undefined }).catch(() => {});
+    setVersion((n) => n + 1);
+  };
+  /** Puts a border on the selection (or takes them off with "none"). */
+  const border = (type: BorderType, color: string, style: string) => {
+    if (!canEdit || !range) return;
+    const layout = store.tabs[tab].layout;
+    const next = addBorder(layout.borders ?? [], { ...range, type, color, style });
+    store.setLayout(tab, { borders: next.length > 0 ? next : undefined }).then(() => gridRef.current && applyLayout(gridRef.current, store, tab)).catch(() => {});
+  };
+
+  /**
+   * Merges the selection into one cell (it keeps the top-left value), or splits merged cells.
+   * "all" merges everything, "rows" each row on its own, "columns" each column on its own.
+   */
+  const merge = async (how: "all" | "rows" | "columns" | "split") => {
+    if (!canEdit || !range) return;
+    const layout = store.tabs[tab].layout;
+    const touches = (m: { r: number; c: number; rs: number; cs: number }) =>
+      m.r <= range.r2 && m.r + m.rs - 1 >= range.r1 && m.c <= range.c2 && m.c + m.cs - 1 >= range.c1;
+    const kept = (layout.merges ?? []).filter((m) => !touches(m));
+    const added: { r: number; c: number; rs: number; cs: number }[] = [];
+    if (how === "all") added.push({ r: range.r1, c: range.c1, rs: range.r2 - range.r1 + 1, cs: range.c2 - range.c1 + 1 });
+    if (how === "rows") for (let r = range.r1; r <= range.r2; r++) added.push({ r, c: range.c1, rs: 1, cs: range.c2 - range.c1 + 1 });
+    if (how === "columns") for (let c = range.c1; c <= range.c2; c++) added.push({ r: range.r1, c, rs: range.r2 - range.r1 + 1, cs: 1 });
+    const blocks = added.filter((m) => m.rs * m.cs > 1);
+    // Nothing to merge and nothing to split: leave the sheet as it is (no "unsaved changes").
+    if (blocks.length === 0 && kept.length === (layout.merges ?? []).length) return;
+    if (blocks.length > 20_000) {
+      toast("That would merge too many cells at once.", "error");
+      return;
+    }
+    try {
+      // The other cells of a block give up their values; the top-left one is kept.
+      for (const m of blocks) {
+        const clear = (cell: WorkbookCell | undefined) => (cell?.style ? { style: cell.style } : undefined);
+        if (m.rs > 1) await store.edit(tab, m.r + 1, m.c, m.r + m.rs - 1, m.c + m.cs - 1, clear);
+        if (m.cs > 1) await store.edit(tab, m.r, m.c + 1, m.r, m.c + m.cs - 1, clear);
+      }
+      await store.setLayout(tab, { merges: [...kept, ...blocks].length > 0 ? [...kept, ...blocks] : undefined });
+      if (gridRef.current) applyLayout(gridRef.current, store, tab);
+      await refresh(blocks.map((m) => ({ tab, r1: m.r, c1: m.c, r2: m.r + m.rs - 1, c2: m.c + m.cs - 1 })));
+    } catch (error) {
+      toast(error instanceof Error ? error.message : String(error), "error");
+    }
+  };
+  const mergedHere = !!range && !!store.tabs[tab]?.layout.merges?.some((m) => m.r <= range.r2 && m.r + m.rs - 1 >= range.r1 && m.c <= range.c2 && m.c + m.cs - 1 >= range.c1);
+
+  const frozen = store.tabs[tab]?.layout.frozen ?? { rows: 0, columns: 0 };
+  const freezeOptions = [
+    { label: "No frozen rows or columns", rows: 0, columns: 0 },
+    { label: "1 row", rows: 1, columns: 0 },
+    { label: "2 rows", rows: 2, columns: 0 },
+    { label: "1 column", rows: 0, columns: 1 },
+    { label: "1 row and 1 column", rows: 1, columns: 1 },
+    ...(active
+      ? [
+          { label: `Up to row ${active.row + 1}`, rows: active.row + 1, columns: frozen.columns },
+          { label: `Up to column ${columnName(active.col)}`, rows: frozen.rows, columns: active.col + 1 },
+        ]
+      : []),
+  ];
 
   const save = useCallback(async () => {
     if (store.dirtyCount === 0 || saving) return;
@@ -353,6 +513,10 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           )
         }
         onStyle={applyStyle}
+        onBorder={border}
+        onMerge={(how) => void merge(how)}
+        canSplit={mergedHere}
+        freeze={{ rows: frozen.rows, columns: frozen.columns, options: freezeOptions, apply: freeze }}
         onFormat={(format) => applyStyle({ numberFormat: format })}
         onDecimals={(delta) => editRange((cell) => restyle(cell, { numberFormat: shiftDecimals(cell?.style?.numberFormat, delta) }))}
       />

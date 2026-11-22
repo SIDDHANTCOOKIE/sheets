@@ -43,6 +43,11 @@ export class SizeIndex {
     for (const o of this.overrides) this.extra.push(this.extra[this.extra.length - 1] + o.size - this.defaultSize);
   }
 
+  /** Replaces every override at once (e.g. when another tab is shown). */
+  replace(list: readonly SizeOverride[]): void {
+    this.setOverrides(list);
+  }
+
   /** Overrides in index order (for saving). */
   list(): SizeOverride[] {
     return this.overrides.map((o) => ({ ...o }));

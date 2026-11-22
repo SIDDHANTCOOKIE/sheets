@@ -1,0 +1,214 @@
+// Copy, paste and fill for big sheets.
+//
+// Copy gives two things: tab-separated text for the system clipboard (so it pastes into other
+// programs) and a "block" kept in memory with the real cells (formulas, formats). Pasting text that
+// matches the last copy uses the block, so formulas keep working and their references move with the
+// cell, as in Excel. Anything else is read as plain text.
+import type { WorkbookCell } from "../workbook";
+import { cellDisplay } from "../workbook/format";
+import { BigSheetStore, MAX_EDIT_CELLS } from "./bigSheet";
+
+const MAX_COLUMNS = 16384;
+
+export interface Area {
+  r1: number;
+  c1: number;
+  r2: number;
+  c2: number;
+}
+
+/** Cells copied from a sheet, remembered with where they came from. */
+export interface Block {
+  /** Top-left cell it was copied from. */
+  row: number;
+  col: number;
+  rows: number;
+  cols: number;
+  cells: (WorkbookCell | undefined)[][];
+  /** The same cells as tab-separated text (what went to the system clipboard). */
+  text: string;
+}
+
+// ---- text format ------------------------------------------------------------------------------
+
+const quote = (text: string) => (/[\t\n\r"]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text);
+
+/** Rows of cells as tab-separated text; cells holding tabs, line breaks or quotes are quoted like Excel does. */
+export function toTsv(rows: string[][]): string {
+  return rows.map((row) => row.map(quote).join("\t")).join("\n");
+}
+
+/** Reads tab-separated text (with Excel-style quoting) into rows of cells. */
+export function fromTsv(text: string): string[][] {
+  const source = text.replace(/\r\n?/g, "\n");
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let cell = "";
+  let quoted = false;
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (source[i + 1] === '"') {
+          cell += '"';
+          i++;
+        } else quoted = false;
+      } else cell += ch;
+    } else if (ch === '"' && cell === "") quoted = true;
+    else if (ch === "\t") {
+      row.push(cell);
+      cell = "";
+    } else if (ch === "\n") {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else cell += ch;
+  }
+  if (cell !== "" || row.length > 0) {
+    row.push(cell);
+    rows.push(row);
+  }
+  return rows;
+}
+
+// ---- copy -------------------------------------------------------------------------------------
+
+const size = (area: Area) => (area.r2 - area.r1 + 1) * (area.c2 - area.c1 + 1);
+
+function tooBig(area: Area): Error | null {
+  return size(area) > MAX_EDIT_CELLS ? new Error(`Select at most ${MAX_EDIT_CELLS.toLocaleString()} cells at once in large sheet mode.`) : null;
+}
+
+/** Are the chunks holding these rows in memory? */
+export function isLoadedArea(store: BigSheetStore, tab: number, area: Area): boolean {
+  for (let chunk = store.chunkFor(tab, area.r1); chunk <= store.chunkFor(tab, area.r2); chunk++) {
+    if (!store.hasChunk(tab, chunk)) return false;
+  }
+  return true;
+}
+
+/** The cells of an area whose chunks are already in memory. */
+export function copyBlockNow(store: BigSheetStore, tab: number, area: Area): Block {
+  const error = tooBig(area);
+  if (error) throw error;
+  const cells: (WorkbookCell | undefined)[][] = [];
+  const text: string[][] = [];
+  for (let r = area.r1; r <= area.r2; r++) {
+    const cellRow: (WorkbookCell | undefined)[] = [];
+    const textRow: string[] = [];
+    for (let c = area.c1; c <= area.c2; c++) {
+      const cell = store.cell(tab, r, c) ?? undefined;
+      cellRow.push(cell ? structuredClone(cell) : undefined);
+      textRow.push(cell ? cellDisplay(cell) : "");
+    }
+    cells.push(cellRow);
+    text.push(textRow);
+  }
+  return { row: area.r1, col: area.c1, rows: cells.length, cols: cells[0]?.length ?? 0, cells, text: toTsv(text) };
+}
+
+/** Like `copyBlockNow`, downloading the chunks first. */
+export async function copyBlock(store: BigSheetStore, tab: number, area: Area): Promise<Block> {
+  const error = tooBig(area);
+  if (error) throw error;
+  for (let chunk = store.chunkFor(tab, area.r1); chunk <= store.chunkFor(tab, area.r2); chunk++) await store.load(tab, chunk);
+  return copyBlockNow(store, tab, area);
+}
+
+// ---- paste and fill ---------------------------------------------------------------------------
+
+/** The formula as if copied by (dr, dc): relative references move, $absolute ones stay. */
+async function shiftFormula(formula: string, dr: number, dc: number): Promise<string> {
+  if (dr === 0 && dc === 0) return formula;
+  const engine = await import("@formstr/sheets-formula");
+  try {
+    // Formulas are stored without the leading "=", which `print` adds.
+    return engine.print(engine.shiftReferences(engine.parse(formula.replace(/^=/, "")), dr, dc)).replace(/^=/, "");
+  } catch {
+    return formula;
+  }
+}
+
+/** Where a paste of `rows` x `cols` lands: at the cell, or tiled over the selection when one value is pasted. */
+function pasteArea(rows: number, cols: number, row: number, col: number, selection?: Area): Area {
+  if (rows === 1 && cols === 1 && selection && (selection.r2 > selection.r1 || selection.c2 > selection.c1)) return selection;
+  return { r1: row, c1: col, r2: row + rows - 1, c2: col + cols - 1 };
+}
+
+function checkFits(area: Area): void {
+  if (area.c2 >= MAX_COLUMNS) throw new Error(`That doesn't fit: a sheet has at most ${MAX_COLUMNS.toLocaleString()} columns.`);
+  const error = tooBig(area);
+  if (error) throw error;
+}
+
+/** Writes `block` over `target` (tiled when the target is bigger), formulas shifted. One undo step. */
+async function writeBlock(store: BigSheetStore, tab: number, block: Block, target: Area): Promise<Area> {
+  checkFits(target);
+  const shifted = new Map<string, string>();
+  for (let r = target.r1; r <= target.r2; r++) {
+    for (let c = target.c1; c <= target.c2; c++) {
+      const sr = (r - target.r1) % block.rows;
+      const sc = (c - target.c1) % block.cols;
+      const source = block.cells[sr][sc];
+      if (source?.formula) shifted.set(`${r}:${c}`, await shiftFormula(source.formula, r - (block.row + sr), c - (block.col + sc)));
+    }
+  }
+  await store.edit(tab, target.r1, target.c1, target.r2, target.c2, (_before, r, c) => {
+    const source = block.cells[(r - target.r1) % block.rows][(c - target.c1) % block.cols];
+    if (!source) return undefined;
+    const cell = structuredClone(source);
+    const formula = shifted.get(`${r}:${c}`);
+    if (formula !== undefined) cell.formula = formula;
+    return cell;
+  });
+  return target;
+}
+
+/** Pastes copied cells with their formats and formulas. Returns the area written. */
+export async function pasteBlock(store: BigSheetStore, tab: number, row: number, col: number, block: Block, selection?: Area): Promise<Area> {
+  if (block.rows === 0 || block.cols === 0) return { r1: row, c1: col, r2: row, c2: col };
+  return writeBlock(store, tab, block, pasteArea(block.rows, block.cols, row, col, selection));
+}
+
+/** What typing `text` into a cell makes, keeping the cell's format. */
+function cellFromText(text: string, before: WorkbookCell | undefined): WorkbookCell | undefined {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("=") && trimmed.length > 1) return { ...(before?.style ? { style: before.style } : {}), formula: trimmed.slice(1) };
+  return BigSheetStore.parseInput(text, before);
+}
+
+/** Pastes plain text (rows of cells). Text starting with "=" becomes a formula. Returns the area written. */
+export async function pasteText(store: BigSheetStore, tab: number, row: number, col: number, rows: string[][], selection?: Area): Promise<Area> {
+  const width = Math.max(1, ...rows.map((r) => r.length));
+  if (rows.length === 0) return { r1: row, c1: col, r2: row, c2: col };
+  const target = pasteArea(rows.length, width, row, col, selection);
+  checkFits(target);
+  await store.edit(tab, target.r1, target.c1, target.r2, target.c2, (before, r, c) =>
+    cellFromText(rows[(r - target.r1) % rows.length][(c - target.c1) % width] ?? "", before),
+  );
+  return target;
+}
+
+/**
+ * Ctrl+D / Ctrl+R: copies the first row (or column) of the selection over the rest, formulas
+ * shifted. With one row (column) selected it copies the row above (column to the left).
+ * Returns the area written, or null when there is nothing to copy from.
+ */
+export async function fillArea(store: BigSheetStore, tab: number, area: Area, direction: "down" | "right"): Promise<Area | null> {
+  const down = direction === "down";
+  const span = down ? area.r2 - area.r1 : area.c2 - area.c1;
+  let source: Area;
+  let target: Area;
+  if (span > 0) {
+    source = down ? { ...area, r2: area.r1 } : { ...area, c2: area.c1 };
+    target = down ? { ...area, r1: area.r1 + 1 } : { ...area, c1: area.c1 + 1 };
+  } else {
+    if ((down ? area.r1 : area.c1) === 0) return null;
+    source = down ? { ...area, r1: area.r1 - 1, r2: area.r1 - 1 } : { ...area, c1: area.c1 - 1, c2: area.c1 - 1 };
+    target = area;
+  }
+  checkFits(target);
+  const block = await copyBlock(store, tab, source);
+  return writeBlock(store, tab, block, target);
+}

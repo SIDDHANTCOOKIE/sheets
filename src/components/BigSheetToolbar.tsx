@@ -1,7 +1,7 @@
 // Toolbar for large sheet mode, laid out like the main editor's (FortuneSheet) toolbar. Buttons
 // change the selected cells' style or number format; the ones that need the whole sheet in memory
 // (filters, conditional formats, freeze, ...) are shown disabled with the reason.
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import {
   AlignCenter,
   AlignLeft,
@@ -93,6 +93,10 @@ export function BigSheetToolbar({
   onPaint,
   onClear,
   onStyle,
+  freeze,
+  onBorder,
+  onMerge,
+  canSplit,
   onFormat,
   onDecimals,
 }: {
@@ -107,10 +111,19 @@ export function BigSheetToolbar({
   onPaint: () => void;
   onClear: () => void;
   onStyle: (patch: StylePatch) => void;
+  /** Frozen panes: how many rows/columns are frozen now, the choices, and how to apply one. */
+  freeze: { rows: number; columns: number; options: { label: string; rows: number; columns: number }[]; apply: (rows: number, columns: number) => void };
+  /** Puts a border on the selection. */
+  onBorder: (type: "all" | "outside" | "inside" | "top" | "bottom" | "left" | "right" | "none", color: string, style: string) => void;
+  onMerge: (how: "all" | "rows" | "columns" | "split") => void;
+  /** Is there a merged block in the selection (so "Unmerge" does something)? */
+  canSplit: boolean;
   onFormat: (format: string | undefined) => void;
   onDecimals: (delta: number) => void;
 }) {
   const off = !canEdit;
+  const [borderColor, setBorderColor] = useState("#000000");
+  const [borderStyle, setBorderStyle] = useState("thin");
   const toggle = (key: "bold" | "italic" | "strike" | "underline") => onStyle({ [key]: !style[key] });
   return (
     <div className="big-toolbar" role="toolbar">
@@ -212,12 +225,59 @@ export function BigSheetToolbar({
           onChange={(event) => onStyle({ background: event.target.value })}
         />
       </label>
-      <Button title="Borders" disabled>
+      <label className={cx("big-tool is-select", off && "is-disabled")} title="Borders">
         <Grid2x2 size={16} />
-      </Button>
-      <Button title="Merge cells" disabled>
+        <select
+          className="big-tool-select"
+          disabled={off}
+          value=""
+          onChange={(event) => event.target.value && onBorder(event.target.value as Parameters<typeof onBorder>[0], borderColor, borderStyle)}
+        >
+          <option value="" disabled>
+            Borders
+          </option>
+          <option value="all">All borders</option>
+          <option value="outside">Outer borders</option>
+          <option value="inside">Inner borders</option>
+          <option value="top">Top border</option>
+          <option value="bottom">Bottom border</option>
+          <option value="left">Left border</option>
+          <option value="right">Right border</option>
+          <option value="none">No borders</option>
+        </select>
+      </label>
+      <label className={cx("big-tool is-select", off && "is-disabled")} title="Border line style">
+        <select className="big-tool-select" disabled={off} value={borderStyle} onChange={(event) => setBorderStyle(event.target.value)}>
+          <option value="thin">Thin</option>
+          <option value="medium">Medium</option>
+          <option value="thick">Thick</option>
+          <option value="dashed">Dashed</option>
+          <option value="dotted">Dotted</option>
+        </select>
+      </label>
+      <label className={cx("big-tool", off && "is-disabled")} title="Border color">
+        <span style={{ width: 14, height: 14, border: "2px solid " + borderColor, borderRadius: 3 }} />
+        <input type="color" disabled={off} value={borderColor} onChange={(event) => setBorderColor(event.target.value)} />
+      </label>
+      <label className={cx("big-tool is-select", off && "is-disabled")} title="Merge cells">
         <TableCellsMerge size={16} />
-      </Button>
+        <select
+          className="big-tool-select"
+          disabled={off}
+          value=""
+          onChange={(event) => event.target.value && onMerge(event.target.value as Parameters<typeof onMerge>[0])}
+        >
+          <option value="" disabled>
+            Merge
+          </option>
+          <option value="all">Merge all</option>
+          <option value="rows">Merge each row</option>
+          <option value="columns">Merge each column</option>
+          <option value="split" disabled={!canSplit}>
+            Unmerge
+          </option>
+        </select>
+      </label>
       <Divider />
       <Button title="Align left" active={style.align === "left"} disabled={off} onClick={() => onStyle({ align: "left" })}>
         <AlignLeft size={16} />
@@ -254,9 +314,28 @@ export function BigSheetToolbar({
         <RotateCw size={16} />
       </Button>
       <Divider />
-      <Button title="Freeze" disabled>
+      <label className="big-tool is-select" title="Freeze rows and columns">
         <Snowflake size={16} />
-      </Button>
+        <select
+          className="big-tool-select"
+          value=""
+          onChange={(event) => {
+            const choice = freeze.options[Number(event.target.value)];
+            if (choice) freeze.apply(choice.rows, choice.columns);
+          }}
+        >
+          <option value="" disabled>
+            {freeze.rows || freeze.columns
+              ? `Frozen: ${[freeze.rows ? `${freeze.rows} row${freeze.rows > 1 ? "s" : ""}` : "", freeze.columns ? `${freeze.columns} col${freeze.columns > 1 ? "s" : ""}` : ""].filter(Boolean).join(", ")}`
+              : "Freeze"}
+          </option>
+          {freeze.options.map((item, index) => (
+            <option key={item.label} value={index}>
+              {item.label}
+            </option>
+          ))}
+        </select>
+      </label>
       <Button title="Conditional formatting" disabled>
         <Palette size={16} />
       </Button>
