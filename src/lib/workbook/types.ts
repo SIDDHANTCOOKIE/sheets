@@ -48,6 +48,8 @@ export interface WorkbookCell {
   tag?: string;
   validation?: WorkbookValidation;
   link?: WorkbookLink;
+  /** A note attached to the cell (shown with a red corner mark). */
+  comment?: string;
 }
 
 export interface WorkbookMerge {

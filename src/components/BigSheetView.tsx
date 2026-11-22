@@ -83,7 +83,7 @@ function tabData(store: BigSheetStore, tab: number): GridData {
     cell(row, col) {
       if (!store.isLoaded(tab, row)) return undefined;
       const cell = store.cell(tab, row, col);
-      return cell ? { text: shown(cell), style: cell.style } : null;
+      return cell ? { text: shown(cell), style: cell.style, link: !!cell.link, note: !!cell.comment } : null;
     },
     ensure(first, end) {
       const info = store.tabs[tab];
@@ -484,6 +484,47 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
     }
   };
 
+  /** Turns "example.com" into a link a browser may follow (http, https or mailto only), or null. */
+  const cleanUrl = (text: string): string | null => {
+    const trimmed = text.trim();
+    if (!trimmed) return null;
+    const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    return /^(https?:|mailto:)/i.test(withScheme) ? withScheme : null;
+  };
+
+  /** Asks for an address and links the selected cells to it (an empty answer leaves things as they are). */
+  const editLink = () => {
+    if (!canEdit || !range) return;
+    const current = active ? store.cell(tab, active.row, active.col)?.link?.url : undefined;
+    const asked = window.prompt("Link address (https://…, or an email as mailto:name@example.com):", current ?? "https://");
+    if (asked === null) return;
+    const url = cleanUrl(asked);
+    if (!url) return toast("Only web (http/https) and mailto links are allowed.", "error");
+    editRange((cell) => ({ ...(cell ?? {}), link: { url }, ...(cell?.value === undefined && !cell?.formula ? { value: url } : {}) }));
+  };
+  const removeLink = () => editRange((cell) => (cell?.link ? (({ link: _link, ...rest }) => (Object.keys(rest).length > 0 ? rest : undefined))(cell) : cell));
+  const openLink = () => {
+    const url = active ? store.cell(tab, active.row, active.col)?.link?.url : undefined;
+    if (url && cleanUrl(url)) window.open(url, "_blank", "noopener,noreferrer");
+  };
+
+  /** Adds, edits or (with an empty answer) deletes the comment of the active cell. */
+  const editComment = () => {
+    if (!canEdit || !active) return;
+    const current = store.cell(tab, active.row, active.col)?.comment ?? "";
+    const asked = window.prompt("Comment for this cell (leave empty to delete it):", current);
+    if (asked === null) return;
+    const text = asked.trim();
+    store
+      .edit(tab, active.row, active.col, active.row, active.col, (cell) => {
+        const { comment: _comment, ...rest } = cell ?? {};
+        void _comment;
+        const next = text ? { ...rest, comment: text } : rest;
+        return Object.keys(next).length > 0 ? next : undefined;
+      })
+      .catch((error) => toast(error instanceof Error ? error.message : String(error), "error"));
+  };
+
   /** Sorts the selected rows by the column of the active cell. */
   const sort = (descending: boolean) => {
     if (!canEdit || !range || !active) return;
@@ -721,6 +762,8 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           )
         }
         onStyle={applyStyle}
+        onLink={editLink}
+        onComment={editComment}
         onQuickFormula={(name) => void quickFormula(name)}
         onSearch={() => setFinding({ replace: false })}
         zoom={{ value: gridRef.current?.zoom ?? 1, set: (z) => gridRef.current?.setZoom(z, true) }}
@@ -775,7 +818,7 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           }}
         />
         <span className="big-sheet-note">
-          {calculating ?? (totals || `${rows.toLocaleString()} rows · large sheet mode${canEdit ? "" : " · read-only"}`)}
+          {calculating ?? (selectedCell?.comment ? `💬 ${selectedCell.comment}` : totals || `${rows.toLocaleString()} rows · large sheet mode${canEdit ? "" : " · read-only"}`)}
         </span>
         {canEdit && (
           <button type="button" className="btn btn-primary btn-sm" disabled={saving || store.dirtyCount === 0} onClick={() => void save()}>
@@ -849,6 +892,10 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
                 [`Delete column${range.c2 > range.c1 ? "s" : ""}`, () => structure("delete", "col"), true],
                 [`Sort rows A → Z by column ${columnName(Math.min(Math.max(active?.col ?? range.c1, range.c1), range.c2))}`, () => sort(false), range.r2 > range.r1],
                 [`Sort rows Z → A by column ${columnName(Math.min(Math.max(active?.col ?? range.c1, range.c1), range.c2))}`, () => sort(true), range.r2 > range.r1],
+                ["Insert or edit link…", editLink, true],
+                ["Open link", openLink, !!selectedCell?.link],
+                ["Remove link", removeLink, !!selectedCell?.link],
+                [selectedCell?.comment ? "Edit comment…" : "Add comment…", editComment, true],
                 ["Set row height…", () => askSize("rows"), true],
                 ["Set column width…", () => askSize("columns"), true],
                 ["Show hidden rows here", () => setHidden("rows", false), hiddenNear("rows")],

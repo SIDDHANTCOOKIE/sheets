@@ -39,6 +39,10 @@ export interface GridCellStyle {
 export interface GridCell {
   text: string;
   style?: GridCellStyle;
+  /** The cell is a hyperlink (drawn blue and underlined). */
+  link?: boolean;
+  /** The cell has a comment (a small mark in its corner). */
+  note?: boolean;
 }
 
 /** What the grid reads. `cell` returns undefined while the cell's data is still loading. */
@@ -496,6 +500,7 @@ export class Grid {
           ctx.fillRect(left, top, w, h);
         }
         if (cell?.text) this.drawText(cell, left, top, w, h, fonts(style));
+        if (cell?.note) this.drawNoteMark(left, top, w);
       }
     }
     ctx.strokeStyle = theme.line;
@@ -525,6 +530,7 @@ export class Grid {
       ctx.fillStyle = cell?.style?.background ?? (cell === undefined ? theme.loading : theme.background);
       ctx.fillRect(left, top, w, h);
       if (cell?.text) this.drawText(cell, left, top, w, h, fonts(cell.style));
+      if (cell?.note) this.drawNoteMark(left, top, w);
       ctx.strokeStyle = theme.line;
       ctx.lineWidth = 1;
       ctx.strokeRect(Math.round(left) - 0.5, Math.round(top) - 0.5, Math.round(w) + 1, Math.round(h) + 1);
@@ -576,7 +582,7 @@ export class Grid {
     ctx.rect(left, top, w, h);
     ctx.clip();
     ctx.font = font;
-    ctx.fillStyle = style?.color ?? theme.text;
+    ctx.fillStyle = style?.color ?? (cell.link ? "#1a56db" : theme.text);
     const rotation = style?.rotation ?? 0;
     if (rotation >= 1 && rotation <= 5) {
       this.drawRotated(cell, left, top, w, h, rotation);
@@ -604,10 +610,21 @@ export class Grid {
       ctx.fillText(line, tx, ty);
       const width = ctx.measureText(line).width;
       const from = align === "left" ? tx : align === "right" ? tx - width : tx - width / 2;
-      if (style?.underline) ctx.fillRect(from, ty + lineH / 2 - 2, width, 1);
+      if (style?.underline || cell.link) ctx.fillRect(from, ty + lineH / 2 - 2, width, 1);
       if (style?.strike) ctx.fillRect(from, ty, width, 1);
     });
     ctx.restore();
+  }
+
+  /** The little red corner that marks a cell with a comment. */
+  private drawNoteMark(left: number, top: number, w: number): void {
+    const { ctx } = this;
+    ctx.fillStyle = "#e5484d";
+    ctx.beginPath();
+    ctx.moveTo(left + w - 8, top + 1);
+    ctx.lineTo(left + w - 1, top + 1);
+    ctx.lineTo(left + w - 1, top + 8);
+    ctx.fill();
   }
 
   /** Text turned 45° or 90°, or stacked letter by letter, inside the cell (the caller has clipped to the cell). */

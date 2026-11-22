@@ -98,6 +98,8 @@ export function BigSheetToolbar({
   zoom,
   onQuickFormula,
   onSearch,
+  onLink,
+  onComment,
   onBorder,
   onMerge,
   canSplit,
@@ -120,6 +122,8 @@ export function BigSheetToolbar({
   /** Writes SUM/AVERAGE/... of each selected column just below the selection. */
   onQuickFormula: (name: "SUM" | "AVERAGE" | "COUNT" | "MAX" | "MIN") => void;
   onSearch: () => void;
+  onLink: () => void;
+  onComment: () => void;
   /** Zoom as a fraction (1 = 100%) and how to change it. */
   zoom: { value: number; set: (zoom: number) => void };
   /** Puts a border on the selection. */
@@ -376,10 +380,10 @@ export function BigSheetToolbar({
       <Button title="Filter" disabled>
         <Filter size={16} />
       </Button>
-      <Button title="Insert link" disabled>
+      <Button title="Insert link" disabled={off} onClick={onLink}>
         <Link size={16} />
       </Button>
-      <Button title="Comment" disabled>
+      <Button title="Comment" disabled={off} onClick={onComment}>
         <MessageSquare size={16} />
       </Button>
       <label className={cx("big-tool is-select", off && "is-disabled")} title="Quick formula: total of the selected columns, written below them">

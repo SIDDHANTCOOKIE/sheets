@@ -18,8 +18,8 @@
       "freeze rows and columns": "done",
       "conditional formatting": "todo",
       "filter": "todo",
-      "link": "todo",
-      "comment": "todo",
+      "link": "done",
+      "comment": "done",
       "quick formula (SUM, AVERAGE...)": "done",
       "data validation": "todo",
       "search / find and replace": "done",
@@ -69,8 +69,8 @@
     "Data features": {
       "data validation (dropdown, number, date, text length...)": "todo",
       "conditional formatting (rules, data bars, colour scales)": "todo",
-      "hyperlinks": "todo",
-      "comments": "todo",
+      "hyperlinks": "done",
+      "comments": "done",
       "filter by value / colour": "todo",
       "images": "todo"
     },
