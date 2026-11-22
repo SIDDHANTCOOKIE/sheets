@@ -13,7 +13,13 @@ export type Step =
   | { op: "insertRow"; index: number; count: number; direction: "above" | "below" }
   | { op: "insertColumn"; index: number; count: number; direction: "left" | "right" }
   | { op: "deleteRow"; start: number; end: number }
-  | { op: "deleteColumn"; start: number; end: number };
+  | { op: "deleteColumn"; start: number; end: number }
+  | { op: "clear"; row: number; col: number }
+  | { op: "rowHeight"; row: number; height: number }
+  | { op: "columnWidth"; col: number; width: number }
+  | { op: "hide"; axis: "row" | "column"; index: number }
+  | { op: "show"; axis: "row" | "column"; index: number }
+  | { op: "freeze"; type: "row" | "column" | "both"; row: number; col: number };
 
 function newContext(sheets: Sheet[]): Context {
   const refs = {
@@ -65,6 +71,24 @@ export function runOnFortuneSheet(document: WorkbookDocument, steps: Step[]): Wo
         break;
       case "deleteColumn":
         api.deleteRowOrColumn(ctx, "column", step.start, step.end);
+        break;
+      case "clear":
+        api.clearCell(ctx, step.row, step.col);
+        break;
+      case "rowHeight":
+        api.setRowHeight(ctx, { [String(step.row)]: step.height });
+        break;
+      case "columnWidth":
+        api.setColumnWidth(ctx, { [String(step.col)]: step.width });
+        break;
+      case "hide":
+        api.hideRowOrColumn(ctx, [String(step.index)], step.axis);
+        break;
+      case "show":
+        api.showRowOrColumn(ctx, [String(step.index)], step.axis);
+        break;
+      case "freeze":
+        api.freeze(ctx, step.type, { row: step.row, column: step.col });
         break;
     }
   }
