@@ -43,6 +43,8 @@ export interface GridCell {
   style?: GridCellStyle;
   /** The cell is a hyperlink (drawn blue and underlined). */
   link?: boolean;
+  /** The cell holds a number (shown to the right unless aligned otherwise, whatever its format looks like). */
+  numeric?: boolean;
   /** The cell has a comment (a small mark in its corner). */
   note?: boolean;
   /** The cell holds something its validation rule does not allow (a red mark in the top-left corner). */
@@ -617,7 +619,7 @@ export class Grid {
       ctx.restore();
       return;
     }
-    const align = style?.align ?? (/^[-+]?[\d.,]+%?$/.test(cell.text) ? "right" : "left");
+    const align = style?.align ?? ((cell.numeric ?? /^[-+]?[\d.,]+%?$/.test(cell.text)) ? "right" : "left");
     ctx.textAlign = align;
     const pad = 4;
     const tx = align === "left" ? left + pad : align === "right" ? left + w - pad : left + w / 2;

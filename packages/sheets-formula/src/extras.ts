@@ -85,6 +85,11 @@ function pieces(section: string): Piece[] {
       const body = end < 0 ? "" : section.slice(i + 1, end);
       // [h], [mm], [ss] are elapsed-time counters; colours and conditions are dropped.
       if (/^(h+|m+|s+)$/i.test(body)) out.push({ kind: "tok", text: `[${body.toLowerCase()}]` });
+      // [$€-407] is a currency symbol (the part after the dash is the locale).
+      else if (body.startsWith("$")) {
+        const symbol = body.slice(1).split("-")[0];
+        if (symbol) out.push({ kind: "lit", text: symbol });
+      }
       i = end < 0 ? section.length : end;
     } else {
       out.push({ kind: "tok", text: ch });

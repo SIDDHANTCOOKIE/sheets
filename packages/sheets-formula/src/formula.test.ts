@@ -337,3 +337,17 @@ describe("ADDRESS, HYPERLINK, LENB, FINDB and the Google conversions", () => {
     expect(run("TO_PURE_NUMBER(7)")).toBe(7);
   });
 });
+
+describe("number formats shown in big sheets", () => {
+  it("formats currency tokens, scientific, time and dates", async () => {
+    const { formatValue } = await import("./index");
+    expect(formatValue(1234.5, "[$€-407] #,##0.00")).toBe("€ 1,234.50");
+    expect(formatValue(1234.5, "[$£-809]#,##0.00")).toBe("£1,234.50");
+    expect(formatValue(1234.5, "[$CHF-807] #,##0.00")).toBe("CHF 1,234.50");
+    expect(formatValue(1234.5, "0.00E+00")).toBe("1.23E+03");
+    expect(formatValue(45000.75, "h:mm:ss AM/PM")).toBe("6:00:00 PM");
+    expect(formatValue(45000.75, "yyyy-mm-dd hh:mm:ss")).toBe("2023-03-15 18:00:00");
+    expect(formatValue(45000, "mmmm d, yyyy")).toBe("March 15, 2023");
+    expect(formatValue(-2, "#,##0.00;[Red]-#,##0.00")).toBe("-2.00");
+  });
+});

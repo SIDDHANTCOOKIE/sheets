@@ -7,3 +7,4 @@ export { columnName, columnIndex } from "./refs";
 export { FormulaError, ParseError, ERROR_CODES } from "./types";
 export type { CellRef, RangeRef, Node, Value, Scalar, ErrorCode, BinaryOp } from "./types";
 export { Engine, sameValue, type EngineOptions, type Change, type CellValue } from "./engine";
+export { formatValue } from "./extras";

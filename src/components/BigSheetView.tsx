@@ -39,8 +39,25 @@ import { useLibrary } from "../providers/LibraryProvider";
 import { useToast } from "../providers/ToastProvider";
 import { cx } from "../lib/utils";
 
+/** The formula engine's number formatter (scientific, accounting, times, dates, [$€-407]...), once it has loaded. */
+let formatter: ((value: number, format: string) => string) | null = null;
+void import("@formstr/sheets-formula").then((engine) => {
+  formatter = (value, format) => engine.formatValue(value, format);
+});
+/** Formats the simple, common cases are handled by cellDisplay; the rest go to the engine's formatter. */
+const SIMPLE_FORMAT = /^(General|@|#,##0(\.0+)?|0(\.0+)?%?|#,##0(\.0+)?%|\$#,##0(\.0+)?|yyyy-mm-dd)$/;
+
 function shown(cell: WorkbookCell | null | undefined): string {
-  return cell ? cellDisplay(cell) : "";
+  if (!cell) return "";
+  const format = cell.style?.numberFormat;
+  if (formatter && typeof cell.value === "number" && !cell.display && format && !SIMPLE_FORMAT.test(format)) {
+    try {
+      return formatter(cell.value, format);
+    } catch {
+      // fall through to the basic formatter
+    }
+  }
+  return cellDisplay(cell);
 }
 
 /** "B7" or "A1:C5" as a range (0-based), or null when it is not a cell reference. */
@@ -104,7 +121,7 @@ function tabData(store: BigSheetStore, tab: number): GridData {
       if (!cell) return rule ? { text: "", style } : null;
       // A cell that no longer fits its validation rule (typed before the rule, pasted, filled) is marked.
       const invalid = !!cell.validation && cell.value !== undefined && validate(cell.validation, shown(cell)) !== null;
-      return { text: shown(cell), style, link: !!cell.link, note: !!cell.comment, invalid };
+      return { text: shown(cell), style, link: !!cell.link, note: !!cell.comment, invalid, numeric: typeof cell.value === "number" };
     },
     ensure(first, end) {
       const info = store.tabs[tab];

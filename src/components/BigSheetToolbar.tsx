@@ -49,6 +49,18 @@ export const NUMBER_FORMATS: { label: string; format: string | undefined }[] = [
   { label: "Percent", format: "0.00%" },
   { label: "Currency", format: "$#,##0.00" },
   { label: "Date", format: "yyyy-mm-dd" },
+  { label: "Scientific", format: "0.00E+00" },
+  { label: "Accounting", format: "_($* #,##0.00_);_($* (#,##0.00);_($* \"-\"??_);_(@_)" },
+  { label: "Time", format: "h:mm:ss AM/PM" },
+  { label: "Time (24 hour)", format: "hh:mm:ss" },
+  { label: "Date and time", format: "yyyy-mm-dd hh:mm:ss" },
+  { label: "Long date", format: "mmmm d, yyyy" },
+  { label: "Euro", format: "[$€-407] #,##0.00" },
+  { label: "British pound", format: "[$£-809]#,##0.00" },
+  { label: "Japanese yen", format: "[$¥-411]#,##0" },
+  { label: "Indian rupee", format: "[$₹-4009]#,##0.00" },
+  { label: "Swiss franc", format: "[$CHF-807] #,##0.00" },
+  { label: "Negative in red", format: "#,##0.00;[Red]-#,##0.00" },
 ];
 const ROTATIONS = ["No rotation", "Tilt up", "Tilt down", "Stacked", "Rotate up", "Rotate down"];
 const FONT_SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 30, 36];
