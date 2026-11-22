@@ -31,6 +31,9 @@ export interface GridCellStyle {
   fontSize?: number;
   fontFamily?: string;
   wrap?: boolean;
+  verticalAlign?: "top" | "middle" | "bottom";
+  /** FortuneSheet codes: 0 none, 1 up 45°, 2 down 45°, 3 stacked letters, 4 up 90°, 5 down 90°. */
+  rotation?: number;
 }
 
 export interface GridCell {
@@ -574,13 +577,28 @@ export class Grid {
     ctx.clip();
     ctx.font = font;
     ctx.fillStyle = style?.color ?? theme.text;
+    const rotation = style?.rotation ?? 0;
+    if (rotation >= 1 && rotation <= 5) {
+      this.drawRotated(cell, left, top, w, h, rotation);
+      ctx.restore();
+      return;
+    }
     const align = style?.align ?? (/^[-+]?[\d.,]+%?$/.test(cell.text) ? "right" : "left");
     ctx.textAlign = align;
     const pad = 4;
     const tx = align === "left" ? left + pad : align === "right" ? left + w - pad : left + w / 2;
     const lines = style?.wrap ? wrapText(ctx, cell.text, w - pad * 2) : [cell.text.split("\n")[0]];
     const lineH = Math.min(style?.fontSize ?? 11, 24) * (96 / 72) * 1.3;
-    const startY = style?.wrap ? top + lineH / 2 + 2 : top + h / 2;
+    const block = lines.length * lineH;
+    const valign = style?.verticalAlign;
+    const startY =
+      valign === "top"
+        ? top + lineH / 2 + 2
+        : valign === "bottom"
+          ? top + h - block + lineH / 2 - 2
+          : style?.wrap
+            ? top + Math.max(lineH / 2 + 2, (h - block) / 2 + lineH / 2)
+            : top + h / 2;
     lines.forEach((line, i) => {
       const ty = startY + i * lineH;
       ctx.fillText(line, tx, ty);
@@ -590,6 +608,30 @@ export class Grid {
       if (style?.strike) ctx.fillRect(from, ty, width, 1);
     });
     ctx.restore();
+  }
+
+  /** Text turned 45° or 90°, or stacked letter by letter, inside the cell (the caller has clipped to the cell). */
+  private drawRotated(cell: GridCell, left: number, top: number, w: number, h: number, rotation: number): void {
+    const { ctx } = this;
+    const style = cell.style;
+    ctx.textAlign = "center";
+    const lineH = Math.min(style?.fontSize ?? 11, 24) * (96 / 72) * 1.2;
+    const text = cell.text.split("\n")[0];
+    if (rotation === 3) {
+      const letters = [...text];
+      const total = letters.length * lineH;
+      let y = top + Math.max(lineH / 2, (h - total) / 2 + lineH / 2);
+      for (const letter of letters) {
+        if (y > top + h) break;
+        ctx.fillText(letter, left + w / 2, y);
+        y += lineH;
+      }
+      return;
+    }
+    const angle = rotation === 1 ? -Math.PI / 4 : rotation === 2 ? Math.PI / 4 : rotation === 4 ? -Math.PI / 2 : Math.PI / 2;
+    ctx.translate(left + w / 2, top + h / 2);
+    ctx.rotate(angle);
+    ctx.fillText(text, 0, 0);
   }
 
   private drawSelection(rb: Band, cb: Band): void {

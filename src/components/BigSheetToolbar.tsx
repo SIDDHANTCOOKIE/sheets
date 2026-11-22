@@ -50,6 +50,7 @@ export const NUMBER_FORMATS: { label: string; format: string | undefined }[] = [
   { label: "Currency", format: "$#,##0.00" },
   { label: "Date", format: "yyyy-mm-dd" },
 ];
+const ROTATIONS = ["No rotation", "Tilt up", "Tilt down", "Stacked", "Rotate up", "Rotate down"];
 const FONT_SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 30, 36];
 const NOT_HERE = "Not available in large sheet mode yet";
 
@@ -323,9 +324,24 @@ export function BigSheetToolbar({
       <Button title="Wrap text" active={!!style.wrap} disabled={off} onClick={() => onStyle({ wrap: !style.wrap })}>
         <WrapText size={16} />
       </Button>
-      <Button title="Text rotation" disabled>
+      <label className={cx("big-tool is-select", off && "is-disabled")} title="Text rotation">
         <RotateCw size={16} />
-      </Button>
+        <select
+          className="big-tool-select"
+          disabled={off}
+          value=""
+          onChange={(event) => event.target.value !== "" && onStyle({ rotation: Number(event.target.value) || undefined })}
+        >
+          <option value="" disabled>
+            {style.rotation ? ROTATIONS[style.rotation] : "Rotate"}
+          </option>
+          {ROTATIONS.map((label, code) => (
+            <option key={label} value={code}>
+              {label}
+            </option>
+          ))}
+        </select>
+      </label>
       <Divider />
       <label className="big-tool is-select" title="Freeze rows and columns">
         <Snowflake size={16} />
