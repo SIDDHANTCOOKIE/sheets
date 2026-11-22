@@ -15,7 +15,7 @@ import { frame } from "./codec";
 import { downloadTabBody } from "./blossom";
 import { editLayout, type StructEdit } from "./layoutEdit";
 import type { ColumnFilter } from "./bigFilter";
-import { ArrayAxis, RunAxis, formulaFromIds, formulaToIds, hasIdRefs, tombstonesFor, type RefContext, type Tombstones } from "./idRefs";
+import { ArrayAxis, RunAxis, dropSheetRefs, formulaFromIds, formulaToIds, hasIdRefs, tombstonesFor, type RefContext, type Tombstones } from "./idRefs";
 import { FRAME_TYPE_TAB_INDEX, ROOT_SCHEMA, ROOT_VERSION, resolveChunks, type ChunkEntry, type RootTab, type SheetRootV2 } from "./root";
 import { randomId } from "../utils";
 
@@ -35,6 +35,8 @@ export const MAX_EDIT_CELLS = 200_000;
 const MAX_COLUMNS = 16_384;
 const MAX_INSERT_ROWS = 100_000;
 const UNDO_STEPS = 100;
+/** A tab's chunk list bigger than this (as JSON) is stored in an index blob instead of in the root. */
+const INDEX_AT_BYTES = 16 * 1024;
 
 export interface CellAddress {
   tab: number;
@@ -218,6 +220,8 @@ export class BigSheetStore {
       if (meta.color) sheet.color = meta.color;
       if (meta.showGridLines !== undefined) sheet.showGridLines = meta.showGridLines;
       for (const key of LAYOUT_KEYS) if (tab.layout[key] !== undefined) (sheet as unknown as Record<string, unknown>)[key] = structuredClone(tab.layout[key]);
+      // A document always holds A1 formulas and has no use for the record of deleted rows (see parseRootV2).
+      delete (sheet as { tombs?: unknown }).tombs;
       sheets.push(sheet);
     }
     return {
@@ -426,6 +430,13 @@ export class BigSheetStore {
       return Promise.resolve(hit);
     }
     let pending = this.loading.get(key);
+    if (!pending && chunk > 0 && this.tabs[tab].chunks[chunk]?.rowCount === 0) {
+      // Every row of this chunk was deleted: its blob still holds them, but they are gone.
+      const empty: ChunkBody = { rows: [], cells: {} };
+      this.cache.set(key, empty);
+      this.bodyEpoch.set(key, this.epoch);
+      return Promise.resolve(empty);
+    }
     if (!pending) {
       const entry = this.tabs[tab].chunks[chunk];
       pending = (this.fetchBody(entry.ref, this.root.servers) as Promise<StoredChunkBody>).then((stored) => {
@@ -984,6 +995,21 @@ export class BigSheetStore {
     }
     this.dirty = dirty;
     this.loading.clear();
+    // Formulas that name a tab that is now gone read #REF! whichever chunk they are in (the ids of unopened chunks do already).
+    const kept = new Set(order);
+    const survivors = new Set(order.map((old) => this.tabs[old].name.toLowerCase()));
+    const dropped = this.tabs.filter((_, old) => !kept.has(old)).map((tab) => tab.name).filter((name) => !survivors.has(name.toLowerCase()));
+    if (this.refsById && dropped.length > 0) {
+      for (const body of this.cache.values()) {
+        const cells = body.cells ?? {};
+        for (const [cellKey, cell] of Object.entries(cells)) {
+          if (cell.formula) {
+            const next = dropSheetRefs(cell.formula, dropped);
+            if (next !== cell.formula) cells[cellKey] = { ...cell, formula: next };
+          }
+        }
+      }
+    }
     this.tabs = order.map((old) => this.tabs[old]);
     this.tabRoots = order.map((old, now) => ({ ...this.tabRoots[old], order: now }));
     this.metaDirty = true;
@@ -1077,6 +1103,10 @@ export class BigSheetStore {
       this.tabs[tab].chunks[chunk] = { ...entry, ref: staged[i].ref, cells: Object.keys(body.cells ?? {}).length };
     });
     const touched = [...new Set([...targets.map((t) => t.tab), ...this.forceTabs])].filter((tab) => tab < this.tabs.length);
+    // The root is one small event: a chunk list that has grown (each entry now also holds its row ids) moves into an index blob.
+    for (const tab of touched) {
+      if (!this.tabs[tab].indexed && JSON.stringify(this.tabs[tab].chunks).length > INDEX_AT_BYTES) this.tabs[tab].indexed = true;
+    }
     const indexOf = new Map<number, number>();
     for (const tab of touched) {
       if (!this.tabs[tab].indexed) continue;
@@ -1097,8 +1127,10 @@ export class BigSheetStore {
       const at = indexOf.get(index);
       return { ...tab, cols: [...this.tabs[index].colIds], chunks: at === undefined ? [...this.tabs[index].chunks] : { index: uploaded[at].ref } };
     });
+    const { refs: _inherited, ...rest } = this.root;
+    void _inherited;
     const root: SheetRootV2 = {
-      ...this.root,
+      ...rest,
       ...(this.byId ? { refs: "id" as const } : {}),
       updatedAt: Date.now(),
       servers: [...holders],
@@ -1107,6 +1139,7 @@ export class BigSheetStore {
       tabs: tabRoots,
     };
     Object.assign(this.root, root);
+    if (!this.byId) delete this.root.refs; // Object.assign cannot remove a key another store set on the shared object
     this.tabRoots = root.tabs.map((tab) => ({ ...tab }));
     this.markSaved();
     return root;

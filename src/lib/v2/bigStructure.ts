@@ -121,15 +121,20 @@ export async function renameTabAndFormulas(
       // unreadable text stays as it is
     }
   }
+  // Formulas stored by id name the tab by its id, so those in chunks that are not open follow the new name by themselves.
+  const byId = store.refsById;
   const chunks = new Set(plans.map((p) => `${p.tab}:${store.chunkFor(p.tab, p.row)}`));
-  if (chunks.size > MAX_REWRITE_CHUNKS) {
+  if (!byId && chunks.size > MAX_REWRITE_CHUNKS) {
     throw new Error("Formulas that name this tab are spread over too many parts of the sheet to update at once.");
   }
   store.renameTab(tab, newName);
   for (const plan of plans) {
-    await store.load(plan.tab, store.chunkFor(plan.tab, plan.row));
-    const cell = store.cell(plan.tab, plan.row, plan.col);
-    if (cell) await store.setDerived(plan.tab, plan.row, plan.col, { ...cell, formula: plan.formula });
+    const chunk = store.chunkFor(plan.tab, plan.row);
+    if (!byId || store.hasChunk(plan.tab, chunk)) {
+      await store.load(plan.tab, chunk);
+      const cell = store.cell(plan.tab, plan.row, plan.col);
+      if (cell) await store.setDerived(plan.tab, plan.row, plan.col, { ...cell, formula: plan.formula });
+    }
     await index.set(store, plan.tab, plan.row, plan.col, plan.formula);
   }
 }

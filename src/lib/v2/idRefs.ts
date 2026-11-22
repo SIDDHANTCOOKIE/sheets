@@ -257,6 +257,17 @@ export function formulaToIds(formula: string, ctx: RefContext): string {
     .join("");
 }
 
+/** The formula with every reference to one of the named sheets (a deleted tab) replaced by #REF!. */
+export function dropSheetRefs(formula: string, names: string[]): string {
+  const gone = new Set(names.map((name) => name.toLowerCase()));
+  return splitProtected(formula, false)
+    .map((part, i) => {
+      if (i % 2 === 1) return part;
+      return part.replace(A1, (whole: string, prefix: string | undefined) => (prefix && gone.has(unquote(prefix.slice(0, -1)).toLowerCase()) ? "#REF!" : whole));
+    })
+    .join("");
+}
+
 /** Does this formula text hold id references? */
 export const hasIdRefs = (formula: string): boolean => formula.includes("~(");
 
