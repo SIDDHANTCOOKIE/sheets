@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { importXlsxToBlossom } from "./streamImport";
 import { BigSheetStore } from "./bigSheet";
 import { calculateTyped, FormulaIndex } from "./bigFormulas";
-import { editStructure } from "./bigStructure";
+import { editStructure, renameTabAndFormulas } from "./bigStructure";
 import { sortArea } from "./bigSort";
 import { editLayout } from "./layoutEdit";
 import { fakeBlossom, localSigner } from "./testUtils";
@@ -30,8 +30,8 @@ function inProcessWorker(): WorkerLike {
 const START = { maxChunkBytes: 64 * 1024, headRawBytes: 100_000, rawCap: 1_000_000 };
 const COLS = 8;
 
-async function open(label: string) {
-  const bytes = await buildLargeXlsx({ tabs: 1, rows: 3000, cols: COLS, sharedStrings: false });
+async function open(label: string, tabs = 1) {
+  const bytes = await buildLargeXlsx({ tabs, rows: 3000, cols: COLS, sharedStrings: false });
   const fake = fakeBlossom();
   const signer = localSigner();
   const servers = [`https://${label}.test`];
@@ -246,4 +246,63 @@ describe("conditional formatting rules in the layout", () => {
     const again = await reopen();
     expect(again.tabs[0].layout.conditionalFormats).toEqual([rule]);
   }, 120_000);
+});
+
+describe("tabs", () => {
+  it("renames (formulas follow), recolours, hides, adds, reorders and deletes tabs through save and reload", async () => {
+    const { store, reopen } = await open("struct-tabs", 2);
+    expect(store.tabs).toHaveLength(2);
+    const [first, second] = store.tabs.map((tab) => tab.name);
+    await store.load(0, 0);
+    await store.load(1, 0);
+    await store.setCell(1, 3, 3, "42");
+    const index = new FormulaIndex();
+    const formula = `'${second}'!D4*2`;
+    const result = await calculateTyped(store, 0, 1, 1, formula);
+    await store.edit(0, 1, 1, 1, 1, () => ({ formula, value: result.value }));
+    await index.set(store, 0, 1, 1, formula);
+    expect(store.cell(0, 1, 1)?.value).toBe(84);
+
+    await renameTabAndFormulas(store, index, 1, "Budget");
+    expect(store.tabs[1].name).toBe("Budget");
+    expect(store.cell(0, 1, 1)?.formula).toBe("Budget!D4*2");
+    store.setTabColor(0, "#ff0000");
+    expect(() => store.setTabHidden(0, true)).not.toThrow();
+    expect(() => store.setTabHidden(1, true)).toThrow(/stay visible/);
+    store.setTabHidden(0, false);
+
+    const added = store.addTab("Notes");
+    expect(added).toBe(2);
+    await store.setCell(2, 4, 1, "hello");
+
+    const again = await reopen();
+    expect(again.tabs.map((t) => t.name)).toEqual([first, "Budget", "Notes"]);
+    expect(again.tabMeta(0).color).toBe("#ff0000");
+    expect(again.tabs[2].rows).toBe(200);
+    await again.load(2, 0);
+    expect(again.cell(2, 4, 1)?.value).toBe("hello");
+    await again.load(0, 0);
+    expect(again.cell(0, 1, 1)?.formula).toBe("Budget!D4*2");
+
+    // Reorder: Notes first. Cells follow their tab, also when saved and reloaded.
+    again.remapTabs([2, 0, 1]);
+    expect(again.tabs.map((t) => t.name)).toEqual(["Notes", first, "Budget"]);
+    expect(again.cell(0, 4, 1)?.value).toBe("hello");
+    const third = await reopen(again);
+    expect(third.tabs.map((t) => t.name)).toEqual(["Notes", first, "Budget"]);
+    await third.load(0, 0);
+    expect(third.cell(0, 4, 1)?.value).toBe("hello");
+    await third.load(2, 0);
+    expect(third.cell(2, 3, 3)?.value).toBe(42);
+
+    // Delete the first tab: the others keep their data.
+    third.remapTabs([1, 2]);
+    const fourth = await reopen(third);
+    expect(fourth.tabs.map((t) => t.name)).toEqual([first, "Budget"]);
+    await fourth.load(1, 0);
+    expect(fourth.cell(1, 3, 3)?.value).toBe(42);
+    expect(fourth.root.tabs.map((t) => t.order)).toEqual([0, 1]);
+    expect(fourth.root.tabs.some((t) => t.id === fourth.root.activeSheetId)).toBe(true);
+    expect(() => fourth.remapTabs([])).toThrow();
+  }, 180_000);
 });

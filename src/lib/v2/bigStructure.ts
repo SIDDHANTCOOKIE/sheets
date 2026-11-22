@@ -81,3 +81,40 @@ export async function editStructure(
     if (stale.length > 0) await refreshDependents(store, index, stale, onProgress, true);
   }
 }
+
+/**
+ * Renames a tab and rewrites every formula that names it ("Sheet2!A1") to the new name. Nothing changes
+ * when the formulas are spread over too many parts of the sheet to rewrite at once.
+ */
+export async function renameTabAndFormulas(
+  store: BigSheetStore,
+  index: FormulaIndex,
+  tab: number,
+  newName: string,
+  onProgress?: RefreshProgress,
+): Promise<void> {
+  const oldName = store.tabs[tab].name;
+  if (oldName === newName) return;
+  const engine = await import("@formstr/sheets-formula");
+  await index.ensureScanned(store, onProgress);
+  const plans: { tab: number; row: number; col: number; formula: string }[] = [];
+  for (const entry of index.all()) {
+    try {
+      const formula = engine.print(engine.renameSheet(engine.parse(entry.formula), oldName, newName)).replace(/^=/, "");
+      if (formula !== entry.formula) plans.push({ tab: entry.tab, row: entry.row, col: entry.col, formula });
+    } catch {
+      // unreadable text stays as it is
+    }
+  }
+  const chunks = new Set(plans.map((p) => `${p.tab}:${store.chunkFor(p.tab, p.row)}`));
+  if (chunks.size > MAX_REWRITE_CHUNKS) {
+    throw new Error("Formulas that name this tab are spread over too many parts of the sheet to update at once.");
+  }
+  store.renameTab(tab, newName);
+  for (const plan of plans) {
+    await store.load(plan.tab, store.chunkFor(plan.tab, plan.row));
+    const cell = store.cell(plan.tab, plan.row, plan.col);
+    if (cell) await store.setDerived(plan.tab, plan.row, plan.col, { ...cell, formula: plan.formula });
+    await index.set(store, plan.tab, plan.row, plan.col, plan.formula);
+  }
+}

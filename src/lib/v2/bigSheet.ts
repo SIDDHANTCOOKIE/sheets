@@ -14,7 +14,8 @@ import { readChunk, writeChunk, type ChunkBody as StoredChunkBody } from "./chun
 import { frame } from "./codec";
 import { downloadTabBody } from "./blossom";
 import { editLayout, type StructEdit } from "./layoutEdit";
-import { FRAME_TYPE_TAB_INDEX, resolveChunks, type ChunkEntry, type SheetRootV2 } from "./root";
+import { FRAME_TYPE_TAB_INDEX, resolveChunks, type ChunkEntry, type RootTab, type SheetRootV2 } from "./root";
+import { randomId } from "../utils";
 
 /** A decoded chunk: cells are positional ("<row - chunk start>:<column index>"), rows are its row ids. */
 interface ChunkBody {
@@ -78,6 +79,9 @@ export interface BigTab {
 export class BigSheetStore {
   readonly root: SheetRootV2;
   tabs: BigTab[] = [];
+  /** The root's tab entries as edited here (names, colours, order); they replace the root's on save. */
+  private tabRoots: RootTab[] = [];
+  private metaDirty = false;
   private readonly servers: string[];
   private readonly env: BlossomEnv;
   private cache = new Map<string, ChunkBody>();
@@ -104,6 +108,7 @@ export class BigSheetStore {
   /** Reads every tab's chunk list and each tab's first chunk (it carries the size and layout). */
   async open(): Promise<void> {
     this.tabs = [];
+    this.tabRoots = this.root.tabs.map((tab) => ({ ...tab }));
     for (const tab of this.root.tabs) {
       const chunks = (await resolveChunks(tab, this.root.servers, this.fetchBody)) ?? [];
       const last = chunks[chunks.length - 1];
@@ -122,8 +127,8 @@ export class BigSheetStore {
         if (tab.chunks.length === 0) return;
         const head = await this.load(index, 0);
         tab.rows = Math.max(tab.rows, head.rowCount ?? 0, 100);
-        tab.cols = Math.max(tab.cols, head.colCount ?? 0, this.root.tabs[index].cols?.length ?? 0);
-        tab.colIds = padCols(this.root.tabs[index].cols, tab.cols);
+        tab.cols = Math.max(tab.cols, head.colCount ?? 0, this.tabRoots[index].cols?.length ?? 0);
+        tab.colIds = padCols(this.tabRoots[index].cols, tab.cols);
         for (const key of LAYOUT_KEYS) if (head[key] !== undefined) (tab.layout as Record<string, unknown>)[key] = head[key];
       }),
     );
@@ -166,8 +171,14 @@ export class BigSheetStore {
     if (!pending) {
       const entry = this.tabs[tab].chunks[chunk];
       pending = (this.fetchBody(entry.ref, this.root.servers) as Promise<StoredChunkBody>).then((stored) => {
+        // Tabs may have been deleted or reordered while this downloaded: then it no longer belongs at this key.
+        const current = this.tabs[tab]?.chunks[chunk];
+        if (!current || current.ref !== entry.ref) {
+          this.loading.delete(key);
+          return { rows: [], cells: {} } as ChunkBody;
+        }
         // The current column ids (they change when columns are inserted or deleted).
-        const colIds = this.tabs[tab].colIds.length > 0 ? this.tabs[tab].colIds : this.root.tabs[tab].cols;
+        const colIds = this.tabs[tab].colIds.length > 0 ? this.tabs[tab].colIds : this.tabRoots[tab].cols;
         const read = readChunk(stored, entry.rowStart, entry.rowCount, colIds);
         const body: ChunkBody = { ...read.layout, rows: read.rows, cells: read.cells };
         this.cache.set(key, body);
@@ -465,6 +476,96 @@ export class BigSheetStore {
     }
   }
 
+  // --- tabs ----------------------------------------------------------------------------------
+
+  /** Are there tab changes (names, colours, order, added or deleted tabs) not saved yet? */
+  get hasTabChanges(): boolean {
+    return this.metaDirty;
+  }
+
+  /** The tab entry as it will be saved (colour, hidden). */
+  tabMeta(tab: number): Pick<RootTab, "id" | "color" | "hidden"> {
+    const { id, color, hidden } = this.tabRoots[tab];
+    return { id, color, hidden };
+  }
+
+  private changeTab(tab: number, patch: Partial<Pick<RootTab, "name" | "color" | "hidden">>): void {
+    const next = { ...this.tabRoots[tab], ...patch };
+    for (const key of Object.keys(next) as (keyof typeof next)[]) if (next[key] === undefined) delete next[key];
+    this.tabRoots[tab] = next;
+    if (patch.name !== undefined) this.tabs[tab].name = patch.name;
+    this.metaDirty = true;
+    this.emit();
+  }
+
+  renameTab(tab: number, name: string): void {
+    this.changeTab(tab, { name });
+  }
+
+  setTabColor(tab: number, color: string | undefined): void {
+    this.changeTab(tab, { color });
+  }
+
+  setTabHidden(tab: number, hidden: boolean): void {
+    if (hidden && this.tabRoots.filter((t) => !t.hidden).length <= 1) throw new Error("At least one tab has to stay visible.");
+    this.changeTab(tab, { hidden: hidden || undefined });
+  }
+
+  /** Adds an empty tab at the end and returns its index. It exists in memory until saved. */
+  addTab(name: string): number {
+    const index = this.tabs.length;
+    const rows = 200;
+    const cols = 26;
+    const entry: ChunkEntry = {
+      id: randomId(8),
+      ref: { x: "", k: "", n: 0, p: 0, c: 0, h: "" },
+      rowStart: 0,
+      rowCount: rows,
+    };
+    this.tabRoots.push({ id: randomId(8), name, order: index });
+    this.tabs.push({ name, chunks: [entry], indexed: false, rows, cols, colIds: padCols([], cols), layout: {} });
+    const body: ChunkBody = { rows: mintRows(this.idTag, this.idCounter, rows), cells: {} };
+    this.idCounter += rows;
+    this.cache.set(this.key(index, 0), body);
+    this.dirty.add(this.key(index, 0));
+    this.metaDirty = true;
+    this.emit();
+    return index;
+  }
+
+  /**
+   * Reorders or drops tabs: `order` lists the old index of each tab that stays, in its new place.
+   * Loaded chunks follow their tab; the undo history is cleared (it names tabs by number).
+   */
+  remapTabs(order: number[]): void {
+    if (order.length === 0) throw new Error("A workbook needs at least one tab.");
+    const where = new Map(order.map((old, now) => [old, now]));
+    const move = (map: Map<string, ChunkBody>) => {
+      const next = new Map<string, ChunkBody>();
+      for (const [key, body] of map) {
+        const [tab, chunk] = key.split(":").map(Number);
+        const now = where.get(tab);
+        if (now !== undefined) next.set(this.key(now, chunk), body);
+      }
+      return next;
+    };
+    this.cache = move(this.cache);
+    const dirty = new Set<string>();
+    for (const key of this.dirty) {
+      const [tab, chunk] = key.split(":").map(Number);
+      const now = where.get(tab);
+      if (now !== undefined) dirty.add(this.key(now, chunk));
+    }
+    this.dirty = dirty;
+    this.loading.clear();
+    this.tabs = order.map((old) => this.tabs[old]);
+    this.tabRoots = order.map((old, now) => ({ ...this.tabRoots[old], order: now }));
+    this.undoStack = [];
+    this.redoStack = [];
+    this.metaDirty = true;
+    this.emit();
+  }
+
   /** Chunks currently in memory, as [tab, chunk]. */
   loadedChunks(): [number, number][] {
     return [...this.cache.keys()].map((key) => key.split(":").map(Number) as [number, number]);
@@ -502,7 +603,7 @@ export class BigSheetStore {
    * The caller signs and publishes the root event.
    */
   async save(options: UploadOptions): Promise<SheetRootV2> {
-    if (this.dirty.size === 0) return this.root;
+    if (this.dirty.size === 0 && !this.metaDirty) return this.root;
     const keys = [...this.dirty];
     const staged: StagedBlob[] = [];
     const targets: { tab: number; chunk: number }[] = [];
@@ -546,17 +647,22 @@ export class BigSheetStore {
     }
     const holders = new Set(this.root.servers);
     uploaded.forEach((blob) => blob.servers.forEach((server) => holders.add(server)));
+    const tabRoots = this.tabRoots.map((tab, index) => {
+      if (!touched.includes(index)) return tab;
+      const at = indexOf.get(index);
+      return { ...tab, cols: [...this.tabs[index].colIds], chunks: at === undefined ? [...this.tabs[index].chunks] : { index: uploaded[at].ref } };
+    });
     const root: SheetRootV2 = {
       ...this.root,
       updatedAt: Date.now(),
       servers: [...holders],
-      tabs: this.root.tabs.map((tab, index) => {
-        if (!touched.includes(index)) return tab;
-        const at = indexOf.get(index);
-        return { ...tab, cols: [...this.tabs[index].colIds], chunks: at === undefined ? [...this.tabs[index].chunks] : { index: uploaded[at].ref } };
-      }),
+      // The tab that was open may have been deleted since.
+      activeSheetId: tabRoots.some((tab) => tab.id === this.root.activeSheetId) ? this.root.activeSheetId : (tabRoots.find((tab) => !tab.hidden) ?? tabRoots[0]).id,
+      tabs: tabRoots,
     };
     Object.assign(this.root, root);
+    this.tabRoots = root.tabs.map((tab) => ({ ...tab }));
+    this.metaDirty = false;
     this.dirty.clear();
     this.emit();
     return root;

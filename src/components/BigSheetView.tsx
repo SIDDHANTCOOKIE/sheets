@@ -7,7 +7,7 @@ import { AlertTriangle, Loader2, Save } from "lucide-react";
 import { BIG_SHEET_EDITING } from "../lib/constants";
 import { BigSheetStore } from "../lib/v2/bigSheet";
 import { sortArea } from "../lib/v2/bigSort";
-import { editStructure } from "../lib/v2/bigStructure";
+import { editStructure, renameTabAndFormulas } from "../lib/v2/bigStructure";
 import { calculateTyped, FormulaIndex, pointRect, refreshDependents, type ChangedRect } from "../lib/v2/bigFormulas";
 import {
   copyBlock,
@@ -120,6 +120,8 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   const [editing, setEditing] = useState<{ row: number; col: number; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [validating, setValidating] = useState(false);
+  /** Right-click menu of a sheet tab (page position of its bottom-left, which tab). */
+  const [tabMenu, setTabMenu] = useState<{ x: number; y: number; index: number } | null>(null);
   /** Function names for formula autocomplete (loaded the first time a formula is typed). */
   const [functionList, setFunctionList] = useState<string[] | null>(null);
   const [suggestAt, setSuggestAt] = useState(0);
@@ -343,6 +345,95 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
     gridRef.current?.setData(tabData(store, index));
     if (gridRef.current) applyLayout(gridRef.current, store, index);
   };
+
+  // --- sheet tabs ------------------------------------------------------------------------------
+
+  /** Shows tab `next` after the tab list changed (tab numbers may have moved, so formulas are looked up again). */
+  const showTabs = (next: number, renumbered: boolean) => {
+    if (renumbered) index.forget();
+    const grid = gridRef.current;
+    setTab(next);
+    setSelection(null);
+    setEditing(null);
+    if (grid) {
+      grid.setData(tabData(store, next));
+      applyLayout(grid, store, next);
+    }
+    setVersion((n) => n + 1);
+  };
+  /** Runs a tab change after any formula work that is still going. */
+  const tabJob = (work: () => Promise<void> | void) => {
+    const job = refreshQueue.current.then(async () => {
+      try {
+        await work();
+      } catch (error) {
+        toast(error instanceof Error ? error.message : "Couldn't change the tabs.", "error");
+      } finally {
+        setCalculating(null);
+      }
+    });
+    refreshQueue.current = job;
+  };
+  const visibleTabs = () => store.tabs.map((_, i) => i).filter((i) => !store.tabMeta(i).hidden);
+  const uniqueName = (base: string) => {
+    const taken = new Set(store.tabs.map((t) => t.name.toLowerCase()));
+    if (!taken.has(base.toLowerCase())) return base;
+    for (let n = 2; ; n++) if (!taken.has(`${base} ${n}`.toLowerCase())) return `${base} ${n}`;
+  };
+  const addTab = () =>
+    tabJob(() => {
+      if (!canEdit) return;
+      const next = store.addTab(uniqueName(`Sheet${store.tabs.length + 1}`));
+      showTabs(next, false);
+    });
+  const renameTab = (at: number) => {
+    if (!canEdit) return;
+    const asked = window.prompt("Tab name:", store.tabs[at].name);
+    if (asked === null) return;
+    const name = asked.trim();
+    if (!name || name.length > 31 || /[[\]:\\/?*']/.test(name)) return toast("Use 1–31 characters, without [ ] : \\ / ? * or quotes.", "error");
+    if (store.tabs.some((t, i) => i !== at && t.name.toLowerCase() === name.toLowerCase())) return toast("Another tab already has that name.", "error");
+    tabJob(async () => {
+      setCalculating("Updating formulas…");
+      await renameTabAndFormulas(store, index, at, name, (done, total) => setCalculating(`Looking for formulas… ${done} of ${total} parts`));
+      setVersion((n) => n + 1);
+    });
+  };
+  const deleteTab = (at: number) => {
+    if (!canEdit) return;
+    if (store.tabs.length <= 1) return toast("A workbook needs at least one tab.", "error");
+    if (!window.confirm(`Delete the tab "${store.tabs[at].name}"? This can't be undone.`)) return;
+    tabJob(() => {
+      const order = store.tabs.map((_, i) => i).filter((i) => i !== at);
+      const shownBefore = tab;
+      store.remapTabs(order);
+      const next = shownBefore === at ? Math.min(at, order.length - 1) : shownBefore > at ? shownBefore - 1 : shownBefore;
+      const visible = visibleTabs();
+      showTabs(visible.includes(next) ? next : (visible[0] ?? 0), true);
+    });
+  };
+  const moveTab = (at: number, delta: number) => {
+    if (!canEdit) return;
+    const to = at + delta;
+    if (to < 0 || to >= store.tabs.length) return;
+    tabJob(() => {
+      const order = store.tabs.map((_, i) => i);
+      [order[at], order[to]] = [order[to], order[at]];
+      store.remapTabs(order);
+      showTabs(order.indexOf(tab), true);
+    });
+  };
+  const hideTab = (at: number, hidden: boolean) => {
+    if (!canEdit) return;
+    try {
+      store.setTabHidden(at, hidden);
+    } catch (error) {
+      return toast(error instanceof Error ? error.message : "Couldn't hide that tab.", "error");
+    }
+    if (hidden && at === tab) showTabs(visibleTabs()[0] ?? 0, false);
+    else setVersion((n) => n + 1);
+  };
+  const TAB_COLORS = ["#e5484d", "#f76b15", "#f5d90a", "#30a46c", "#0090ff", "#8e4ec6", "#6b7280"];
 
   /** Keeps the first rows/columns in view while scrolling; remembered with the sheet when it can be edited. */
   const freeze = (rows: number, columns: number) => {
@@ -1050,12 +1141,80 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           </div>
         </>
       )}
+      {tabMenu && (
+        <>
+          <div className="big-menu-backdrop" onPointerDown={() => setTabMenu(null)} onContextMenu={(event) => (event.preventDefault(), setTabMenu(null))} />
+          <div className="big-menu" style={{ bottom: window.innerHeight - tabMenu.y, left: tabMenu.x }} role="menu">
+            {(
+              [
+                ["Rename…", () => renameTab(tabMenu.index), true],
+                ["Delete", () => deleteTab(tabMenu.index), store.tabs.length > 1],
+                ["Move left", () => moveTab(tabMenu.index, -1), tabMenu.index > 0],
+                ["Move right", () => moveTab(tabMenu.index, 1), tabMenu.index < store.tabs.length - 1],
+                ["Hide tab", () => hideTab(tabMenu.index, true), visibleTabs().length > 1],
+                ["Remove colour", () => (store.setTabColor(tabMenu.index, undefined), setVersion((n) => n + 1)), !!store.tabMeta(tabMenu.index).color],
+              ] as [string, () => void, boolean][]
+            ).map(([label, run, enabled]) => (
+              <button key={label} type="button" role="menuitem" disabled={!canEdit || !enabled} onClick={() => (setTabMenu(null), run())}>
+                {label}
+              </button>
+            ))}
+            <div className="big-menu-swatches">
+              {TAB_COLORS.map((color) => (
+                <button
+                  key={color}
+                  type="button"
+                  aria-label={`Colour ${color}`}
+                  className="big-menu-swatch"
+                  style={{ background: color }}
+                  disabled={!canEdit}
+                  onClick={() => {
+                    store.setTabColor(tabMenu.index, color);
+                    setTabMenu(null);
+                    setVersion((n) => n + 1);
+                  }}
+                />
+              ))}
+            </div>
+            {store.tabs.some((_, i) => store.tabMeta(i).hidden) && (
+              <>
+                <div className="big-menu-title">Hidden tabs</div>
+                {store.tabs.map((item, i) =>
+                  store.tabMeta(i).hidden ? (
+                    <button key={item.name + i} type="button" role="menuitem" disabled={!canEdit} onClick={() => (setTabMenu(null), hideTab(i, false))}>
+                      Show "{item.name}"
+                    </button>
+                  ) : null,
+                )}
+              </>
+            )}
+          </div>
+        </>
+      )}
       <div className="big-sheet-tabs">
-        {store.tabs.map((item, index) => (
-          <button key={item.name + index} type="button" className={cx("big-sheet-tab", index === tab && "is-active")} onClick={() => switchTab(index)}>
-            {item.name}
+        {store.tabs.map((item, index) =>
+          store.tabMeta(index).hidden ? null : (
+            <button
+              key={item.name + index}
+              type="button"
+              className={cx("big-sheet-tab", index === tab && "is-active")}
+              style={store.tabMeta(index).color ? { boxShadow: `inset 0 -3px 0 ${store.tabMeta(index).color}` } : undefined}
+              onClick={() => switchTab(index)}
+              onDoubleClick={() => renameTab(index)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setTabMenu({ x: event.clientX, y: event.clientY, index });
+              }}
+            >
+              {item.name}
+            </button>
+          ),
+        )}
+        {canEdit && (
+          <button type="button" className="big-sheet-tab" title="Add a tab" aria-label="Add a tab" onClick={addTab}>
+            +
           </button>
-        ))}
+        )}
       </div>
     </div>
   );

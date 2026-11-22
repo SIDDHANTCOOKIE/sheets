@@ -201,6 +201,12 @@ export class FormulaIndex {
     return [...this.entries.values()];
   }
 
+  /** Forgets everything, including which chunks were scanned (tabs were deleted or reordered, so tab numbers changed). */
+  forget(): void {
+    this.reset();
+    this.scanned.clear();
+  }
+
   /** Forgets every formula (the chunks stay marked as scanned). Used after rows/columns moved, before re-adding them. */
   reset(): void {
     this.entries.clear();
