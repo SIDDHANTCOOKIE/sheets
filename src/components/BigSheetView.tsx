@@ -27,6 +27,9 @@ import type { LibraryEntry } from "../lib/types";
 import type { WorkbookCell } from "../lib/workbook";
 import { cellDisplay } from "../lib/workbook/format";
 import { BigFindBar } from "./BigFindBar";
+import { exportBigSheet } from "../lib/v2/bigExport";
+import { downloadBlob } from "../lib/xlsx";
+import { fileSafeName } from "../lib/utils";
 import { PersonDialog, TagDialog, type PersonChoice } from "./CellMetaDialogs";
 import { useAuth } from "../providers/AuthProvider";
 import { useProfiles } from "../providers/ProfileProvider";
@@ -756,6 +759,26 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
     });
   };
 
+  /** Writes the whole workbook as an .xlsx file, a part at a time, and downloads it. */
+  const exporting = useRef(false);
+  const downloadXlsx = async () => {
+    if (exporting.current) return;
+    exporting.current = true;
+    try {
+      const blob = await exportBigSheet(store, {
+        title: entry.title,
+        onProgress: (done, total) => setCalculating(`Preparing the .xlsx… ${done} of ${total} parts`),
+      });
+      downloadBlob(`${fileSafeName(entry.title || "sheet")}.xlsx`, blob);
+      toast("The .xlsx file is ready. It has your latest edits, saved or not.", "success");
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Couldn't prepare the .xlsx file.", "error");
+    } finally {
+      exporting.current = false;
+      setCalculating(null);
+    }
+  };
+
   /** Turns "example.com" into a link a browser may follow (http, https or mailto only), or null. */
   const cleanUrl = (text: string): string | null => {
     const trimmed = text.trim();
@@ -1173,6 +1196,9 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
         <span className="big-sheet-note">
           {calculating ?? (store.tabs[tab].layout.filter && !selectedCell?.comment ? `Filter on column ${columnName(store.tabs[tab].layout.filter.col)} ${store.tabs[tab].layout.filter.summary} · ${store.tabs[tab].layout.filter.hidden.length.toLocaleString()} rows hidden` : selectedCell?.comment ? `💬 ${selectedCell.comment}` : totals || `${rows.toLocaleString()} rows · large sheet mode${canEdit ? "" : " · read-only"}`)}
         </span>
+        <button type="button" className="big-sheet-calc" disabled={!!calculating} onClick={() => void downloadXlsx()} title="Download every tab as an .xlsx file">
+          Download .xlsx
+        </button>
         {canEdit && (
           <button type="button" className="btn btn-primary btn-sm" disabled={saving || store.dirtyCount === 0} onClick={() => void save()}>
             {saving ? <Loader2 size={14} className="spin" /> : <Save size={14} />}

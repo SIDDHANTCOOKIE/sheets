@@ -79,7 +79,7 @@
       "save and reload everything above": "done",
       "undo history for structural edits": "done",
       "xlsx import (streaming)": "done",
-      "xlsx export (streaming)": "todo",
+      "xlsx export (streaming)": "done",
       "live collaboration": "todo",
       "automated parity test against FortuneSheet": "todo",
       "FortuneSheet removed": "todo",
