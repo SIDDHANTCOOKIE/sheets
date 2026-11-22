@@ -16,7 +16,7 @@
       "text wrap": "done",
       "text rotation": "done",
       "freeze rows and columns": "done",
-      "conditional formatting": "todo",
+      "conditional formatting": "done",
       "filter": "todo",
       "link": "done",
       "comment": "done",
@@ -68,7 +68,7 @@
     },
     "Data features": {
       "data validation (dropdown, number, date, text length...)": "partial",
-      "conditional formatting (rules, data bars, colour scales)": "todo",
+      "conditional formatting (rules, data bars, colour scales)": "partial",
       "hyperlinks": "done",
       "comments": "done",
       "filter by value / colour": "todo",

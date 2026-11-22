@@ -7,7 +7,7 @@
 // Saving re-encrypts only the dirty chunks (plus a tab's index blob when its chunk list lives in
 // one) and uploads them under ONE signed authorization, then returns the updated root. Formulas
 // are not recalculated: an edit stores the typed value.
-import type { WorkbookCell } from "../workbook";
+import type { WorkbookCell, WorkbookConditionalRule } from "../workbook";
 import { encryptFrame, uploadStaged, type BlossomEnv, type StagedBlob, type UploadOptions } from "./blossom";
 import { concatRuns, deleteRuns, insertRuns, legacyRows, mintRows, newDeviceTag, padCols, padRuns, rowCountOf, type RowRun } from "../workbook/ids";
 import { readChunk, writeChunk, type ChunkBody as StoredChunkBody } from "./chunks";
@@ -56,11 +56,12 @@ export interface TabLayout {
   frozen?: { rows: number; columns: number };
   /** 1 = 100%. */
   zoom?: number;
+  conditionalFormats?: WorkbookConditionalRule[];
   merges?: { r: number; c: number; rs: number; cs: number }[];
   borders?: { r1: number; c1: number; r2: number; c2: number; type: "all" | "outside" | "inside" | "top" | "bottom" | "left" | "right" | "none"; color?: string; style?: string }[];
 }
 
-const LAYOUT_KEYS = ["columnWidths", "rowHeights", "hiddenRows", "hiddenColumns", "frozen", "zoom", "merges", "borders"] as const;
+const LAYOUT_KEYS = ["columnWidths", "rowHeights", "hiddenRows", "hiddenColumns", "frozen", "zoom", "conditionalFormats", "merges", "borders"] as const;
 
 export interface BigTab {
   layout: TabLayout;

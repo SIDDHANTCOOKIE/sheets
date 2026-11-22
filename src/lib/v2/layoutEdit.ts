@@ -77,5 +77,15 @@ export function editLayout(layout: TabLayout, edit: StructEdit): TabLayout {
     return [row ? { ...b, r1: span[0], r2: span[1] } : { ...b, c1: span[0], c2: span[1] }];
   });
   if (borders.length > 0) out.borders = borders;
+
+  const rules = (layout.conditionalFormats ?? []).flatMap((rule) => {
+    const ranges = rule.ranges.flatMap((r) => {
+      const span = row ? moveSpan(r.r1, r.r2, edit) : moveSpan(r.c1, r.c2, edit);
+      if (!span) return [];
+      return [row ? { ...r, r1: span[0], r2: span[1] } : { ...r, c1: span[0], c2: span[1] }];
+    });
+    return ranges.length > 0 ? [{ ...rule, ranges }] : [];
+  });
+  if (rules.length > 0) out.conditionalFormats = rules;
   return out;
 }

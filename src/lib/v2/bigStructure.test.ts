@@ -232,3 +232,18 @@ describe("links and comments", () => {
     expect(again.cell(0, 5, 2)?.comment).toBeUndefined();
   }, 120_000);
 });
+
+describe("conditional formatting rules in the layout", () => {
+  it("move with inserted rows, shrink with deleted ones, and survive save and reload", async () => {
+    const rule = { ranges: [{ r1: 4, c1: 0, r2: 8, c2: 1 }], condition: { type: "gt", values: ["5"] }, format: { cellColor: "#fee" } };
+    expect(editLayout({ conditionalFormats: [rule] }, { kind: "insert", axis: "row", index: 2, count: 3 }).conditionalFormats?.[0].ranges).toEqual([{ r1: 7, c1: 0, r2: 11, c2: 1 }]);
+    expect(editLayout({ conditionalFormats: [rule] }, { kind: "delete", axis: "row", index: 6, count: 10 }).conditionalFormats?.[0].ranges).toEqual([{ r1: 4, c1: 0, r2: 5, c2: 1 }]);
+    expect(editLayout({ conditionalFormats: [rule] }, { kind: "delete", axis: "row", index: 4, count: 5 }).conditionalFormats).toBeUndefined();
+    expect(editLayout({ conditionalFormats: [rule] }, { kind: "insert", axis: "col", index: 1, count: 1 }).conditionalFormats?.[0].ranges).toEqual([{ r1: 4, c1: 0, r2: 8, c2: 2 }]);
+
+    const { store, reopen } = await open("struct-cf");
+    await store.setLayout(0, { conditionalFormats: [rule] });
+    const again = await reopen();
+    expect(again.tabs[0].layout.conditionalFormats).toEqual([rule]);
+  }, 120_000);
+});

@@ -101,6 +101,7 @@ export function BigSheetToolbar({
   onLink,
   onComment,
   onValidation,
+  onConditional,
   onBorder,
   onMerge,
   canSplit,
@@ -126,6 +127,7 @@ export function BigSheetToolbar({
   onLink: () => void;
   onComment: () => void;
   onValidation: () => void;
+  onConditional: () => void;
   /** Zoom as a fraction (1 = 100%) and how to change it. */
   zoom: { value: number; set: (zoom: number) => void };
   /** Puts a border on the selection. */
@@ -376,7 +378,7 @@ export function BigSheetToolbar({
           ))}
         </select>
       </label>
-      <Button title="Conditional formatting" disabled>
+      <Button title="Conditional formatting" disabled={off} onClick={onConditional}>
         <Palette size={16} />
       </Button>
       <Button title="Filter" disabled>

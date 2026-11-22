@@ -26,6 +26,8 @@ import type { WorkbookCell } from "../lib/workbook";
 import { cellDisplay } from "../lib/workbook/format";
 import { BigFindBar } from "./BigFindBar";
 import { BigValidationDialog } from "./BigValidationDialog";
+import { BigConditionalDialog } from "./BigConditionalDialog";
+import { formatFor, withoutArea } from "../lib/v2/bigConditional";
 import { validate } from "../lib/v2/bigValidation";
 import { BigSheetToolbar, shiftDecimals, type StylePatch } from "./BigSheetToolbar";
 import { useLibrary } from "../providers/LibraryProvider";
@@ -85,7 +87,11 @@ function tabData(store: BigSheetStore, tab: number): GridData {
     cell(row, col) {
       if (!store.isLoaded(tab, row)) return undefined;
       const cell = store.cell(tab, row, col);
-      return cell ? { text: shown(cell), style: cell.style, link: !!cell.link, note: !!cell.comment } : null;
+      // Conditional formatting colours the cell while it is drawn; nothing is stored in the cell.
+      const rule = formatFor(store.tabs[tab]?.layout.conditionalFormats, row, col, cell);
+      const style = rule ? { ...cell?.style, ...(rule.textColor ? { color: rule.textColor } : {}), ...(rule.cellColor ? { background: rule.cellColor } : {}) } : cell?.style;
+      if (!cell) return rule ? { text: "", style } : null;
+      return { text: shown(cell), style, link: !!cell.link, note: !!cell.comment };
     },
     ensure(first, end) {
       const info = store.tabs[tab];
@@ -114,6 +120,7 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   const [editing, setEditing] = useState<{ row: number; col: number; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [validating, setValidating] = useState(false);
+  const [formatting, setFormatting] = useState(false);
   /** What is typed in the name box (null: show the selection). */
   const [nameDraft, setNameDraft] = useState<string | null>(null);
   /** The find bar (Ctrl+F), with the replace row when opened by Ctrl+H. */
@@ -774,6 +781,7 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
         }
         onStyle={applyStyle}
         onValidation={() => setValidating(true)}
+        onConditional={() => setFormatting(true)}
         onLink={editLink}
         onComment={editComment}
         onQuickFormula={(name) => void quickFormula(name)}
@@ -839,6 +847,28 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           </button>
         )}
       </div>
+      {formatting && range && (
+        <BigConditionalDialog
+          rangeLabel={selectionLabel()}
+          hasRules={(store.tabs[tab].layout.conditionalFormats ?? []).some((rule) =>
+            rule.ranges.some((r) => r.r1 <= range.r2 && r.r2 >= range.r1 && r.c1 <= range.c2 && r.c2 >= range.c1),
+          )}
+          onClose={() => setFormatting(false)}
+          onSave={(condition, format) => {
+            setFormatting(false);
+            const rules = store.tabs[tab].layout.conditionalFormats ?? [];
+            // A new rule goes first so it wins over older ones on the same cells.
+            store
+              .setLayout(tab, { conditionalFormats: [{ ranges: [{ r1: range.r1, c1: range.c1, r2: range.r2, c2: range.c2 }], condition, format }, ...rules] })
+              .catch(() => {});
+          }}
+          onClearHere={() => {
+            setFormatting(false);
+            const left = withoutArea(store.tabs[tab].layout.conditionalFormats ?? [], range);
+            store.setLayout(tab, { conditionalFormats: left.length > 0 ? left : undefined }).catch(() => {});
+          }}
+        />
+      )}
       {validating && range && (
         <BigValidationDialog
           current={selectedCell?.validation}

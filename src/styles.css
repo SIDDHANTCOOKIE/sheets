@@ -3794,3 +3794,7 @@ pre {
 .big-dialog select, .big-dialog input, .big-dialog textarea { padding: 6px 8px; border-radius: 6px; border: 1px solid rgba(128, 128, 128, 0.45); background: transparent; color: inherit; font: inherit; min-width: 0; }
 .big-dialog-row input { flex: 1; width: 0; }
 .big-dialog-actions { display: flex; gap: 8px; align-items: center; }
+
+.big-dialog-check { display: inline-flex; align-items: center; gap: 6px; }
+.big-dialog-check input[type="color"] { padding: 0; width: 30px; height: 24px; }
+.big-dialog-preview { margin-left: auto; padding: 4px 10px; border-radius: 6px; border: 1px solid rgba(128, 128, 128, 0.35); }
