@@ -555,6 +555,43 @@ export class BigSheetStore {
   }
 
   /**
+   * Adds a copy of a tab right after it and returns its index. Nothing is downloaded: the copy points at
+   * the same (unchangeable) blobs, and a chunk gets its own blob only when it is edited. The source tab
+   * must be saved first, so that what is copied is what the sheet holds.
+   */
+  duplicateTab(tab: number, name: string): number {
+    const info = this.tabs[tab];
+    if ([...this.dirty].some((key) => key.startsWith(`${tab}:`))) throw new Error("Save your changes first, then copy the tab.");
+    const source = this.tabRoots[tab];
+    const at = tab + 1;
+    const copy: BigTab = {
+      name,
+      chunks: info.chunks.map((entry) => ({ ...entry, id: randomId(8) })),
+      indexed: info.indexed,
+      rows: info.rows,
+      cols: info.cols,
+      colIds: [...info.colIds],
+      layout: structuredClone(info.layout),
+    };
+    const entry: RootTab = {
+      id: randomId(8),
+      name,
+      order: at,
+      cols: [...info.colIds],
+      chunks: Array.isArray(source.chunks) ? copy.chunks.map((chunk) => ({ ...chunk })) : source.chunks,
+      ...(source.color ? { color: source.color } : {}),
+      ...(source.showGridLines !== undefined ? { showGridLines: source.showGridLines } : {}),
+    };
+    // Insert after the source by renumbering the tabs that follow it.
+    const order = this.tabs.map((_, i) => i);
+    this.tabs.push(copy);
+    this.tabRoots.push(entry);
+    order.splice(at, 0, this.tabs.length - 1);
+    this.remapTabs(order);
+    return at;
+  }
+
+  /**
    * Reorders or drops tabs: `order` lists the old index of each tab that stays, in its new place.
    * Loaded chunks follow their tab; the undo history is cleared (it names tabs by number).
    */

@@ -477,6 +477,13 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
       showTabs(order.indexOf(tab), true);
     });
   };
+  const copyTab = (at: number) => {
+    if (!canEdit) return;
+    tabJob(() => {
+      const next = store.duplicateTab(at, uniqueName(`Copy of ${store.tabs[at].name}`.slice(0, 31)));
+      showTabs(next, true);
+    });
+  };
   const hideTab = (at: number, hidden: boolean) => {
     if (!canEdit) return;
     try {
@@ -1296,6 +1303,7 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
             {(
               [
                 ["Rename…", () => renameTab(tabMenu.index), true],
+                ["Make a copy", () => copyTab(tabMenu.index), true],
                 ["Delete", () => deleteTab(tabMenu.index), store.tabs.length > 1],
                 ["Move left", () => moveTab(tabMenu.index, -1), tabMenu.index > 0],
                 ["Move right", () => moveTab(tabMenu.index, 1), tabMenu.index < store.tabs.length - 1],

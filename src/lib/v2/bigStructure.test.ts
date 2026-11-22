@@ -496,3 +496,33 @@ describe("volatile formulas and full recalculation", () => {
     expect(store.cell(0, 3, 0)?.value).toBe(11); // chained: A3 = A2*2 + 1 = 11
   }, 120_000);
 });
+
+describe("copying a tab", () => {
+  it("points the copy at the same data without downloading it, and edits stay in their own tab", async () => {
+    const { store, reopen } = await open("struct-copy");
+    await store.load(0, 0);
+    await store.setCell(0, 3, 3, "original");
+    expect(() => store.duplicateTab(0, "Copy")).toThrow(/Save your changes first/);
+    const saved = await reopen();
+
+    const at = saved.duplicateTab(0, "Copy of Tab");
+    expect(at).toBe(1);
+    expect(saved.tabs.map((t) => t.name)).toHaveLength(2);
+    expect(saved.tabs[1].chunks.map((c) => c.ref)).toEqual(saved.tabs[0].chunks.map((c) => c.ref)); // shared blobs
+    expect(new Set([...saved.tabs[0].chunks, ...saved.tabs[1].chunks].map((c) => c.id)).size).toBe(saved.tabs[0].chunks.length * 2);
+    await saved.load(1, 0);
+    expect(saved.cell(1, 3, 3)?.value).toBe("original");
+
+    await saved.setCell(1, 3, 3, "changed in the copy");
+    await saved.load(0, 0);
+    expect(saved.cell(0, 3, 3)?.value).toBe("original");
+
+    const again = await reopen(saved);
+    expect(again.tabs).toHaveLength(2);
+    await again.load(0, 0);
+    await again.load(1, 0);
+    expect(again.cell(0, 3, 3)?.value).toBe("original");
+    expect(again.cell(1, 3, 3)?.value).toBe("changed in the copy");
+    expect(again.tabs[1].chunks.length).toBe(again.tabs[0].chunks.length);
+  }, 180_000);
+});

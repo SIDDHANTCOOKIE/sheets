@@ -44,7 +44,7 @@
     "Sheet chrome": {
       "sheet tabs (switch)": "done",
       "add / rename / delete / reorder tabs": "done",
-      "tab colour, hide tab, copy tab": "partial",
+      "tab colour, hide tab, copy tab": "done",
       "name box with jump to cell": "done",
       "status bar totals": "done",
       "zoom": "done",
