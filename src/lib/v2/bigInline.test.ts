@@ -80,3 +80,22 @@ describe("a small sheet held in memory by the big-sheet store", () => {
     expect((await again.toDocument()).sheets[0].cells).toEqual(sheet.cells);
   });
 });
+
+describe("pictures in a sheet", () => {
+  const image = { id: "i1", src: "data:image/png;base64,AAAA", row: 5, col: 2, dx: 4, dy: 4, width: 100, height: 60 };
+  it("move with inserted and deleted rows and survive turning the sheet into a document", async () => {
+    const store = BigSheetStore.fromDocument(sample());
+    await store.open();
+    await store.load(0, 0);
+    await store.setLayout(0, { images: [image] });
+    const index = new FormulaIndex();
+    await editStructure(store, index, 0, { kind: "insert", axis: "row", index: 2, count: 3 });
+    expect(store.tabs[0].layout.images?.[0]).toMatchObject({ row: 8, col: 2 });
+    await editStructure(store, index, 0, { kind: "insert", axis: "col", index: 0, count: 1 });
+    expect(store.tabs[0].layout.images?.[0]).toMatchObject({ row: 8, col: 3 });
+    const back = await store.toDocument();
+    expect(back.sheets[0].images?.[0]).toMatchObject({ id: "i1", row: 8, col: 3, width: 100 });
+    await editStructure(store, index, 0, { kind: "delete", axis: "row", index: 8, count: 1 });
+    expect(store.tabs[0].layout.images).toBeUndefined();
+  });
+});

@@ -76,10 +76,12 @@ export interface TabLayout {
   /** A filter by the values of one column: its `hidden` rows are hidden on top of rows hidden by hand. */
   filter?: ColumnFilter;
   merges?: { r: number; c: number; rs: number; cs: number }[];
+  /** Pictures floating over the cells, each anchored to a cell. */
+  images?: { id: string; src: string; row: number; col: number; dx: number; dy: number; width: number; height: number }[];
   borders?: { r1: number; c1: number; r2: number; c2: number; type: "all" | "outside" | "inside" | "top" | "bottom" | "left" | "right" | "none"; color?: string; style?: string }[];
 }
 
-const LAYOUT_KEYS = ["columnWidths", "rowHeights", "hiddenRows", "hiddenColumns", "frozen", "zoom", "conditionalFormats", "filter", "merges", "borders"] as const;
+const LAYOUT_KEYS = ["columnWidths", "rowHeights", "hiddenRows", "hiddenColumns", "frozen", "zoom", "conditionalFormats", "filter", "merges", "borders", "images"] as const;
 
 export interface BigTab {
   layout: TabLayout;

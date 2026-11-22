@@ -33,7 +33,7 @@ import { fileSafeName } from "../lib/utils";
 import { PersonDialog, TagDialog, type PersonChoice } from "./CellMetaDialogs";
 import { useAuth } from "../providers/AuthProvider";
 import { useProfiles } from "../providers/ProfileProvider";
-import { colorFromString, shortNpub, toNpub } from "../lib/utils";
+import { colorFromString, randomId, shortNpub, toNpub } from "../lib/utils";
 import type { UserRef } from "../lib/types";
 import { BigValidationDialog } from "./BigValidationDialog";
 import { BigConditionalDialog } from "./BigConditionalDialog";
@@ -359,6 +359,14 @@ export function BigSheetView({
         if (live.current.canEdit) store.setLayout(live.current.tab, { zoom: zoom === 1 ? undefined : zoom }).catch(() => {});
       },
       onContextMenu: (info) => setMenu({ x: info.x, y: info.y }),
+      images: () => store.tabs[live.current.tab]?.layout.images ?? [],
+      onImageChange: (id, change) => {
+        if (!live.current.canEdit) return;
+        const tabNo = live.current.tab;
+        const list = store.tabs[tabNo].layout.images ?? [];
+        const next = change ? list.map((image) => (image.id === id ? { ...image, ...change } : image)) : list.filter((image) => image.id !== id);
+        store.setLayout(tabNo, { images: next.length > 0 ? next : undefined }).catch(() => {});
+      },
       onResize: (kind, index, size) => {
         // Resizing in a read-only sheet only lasts until the page is closed.
         if (!live.current.canEdit) return;
@@ -813,6 +821,36 @@ export function BigSheetView({
   };
 
   /** Asks for an address and links the selected cells to it (an empty answer leaves things as they are). */
+  /** Picks a picture, shrinks it to at most 640 px wide and floats it at the active cell. */
+  const insertImage = async () => {
+    const input = window.document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      try {
+        const bitmap = await createImageBitmap(file);
+        const scale = Math.min(1, 640 / bitmap.width);
+        const width = Math.max(20, Math.round(bitmap.width * scale));
+        const height = Math.max(20, Math.round(bitmap.height * scale));
+        const canvas = window.document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d")?.drawImage(bitmap, 0, 0, width, height);
+        const src = canvas.toDataURL(file.type === "image/png" ? "image/png" : "image/jpeg", 0.85);
+        if (src.length > 1_500_000) throw new Error("That picture is too large even after shrinking it.");
+        const layout = store.tabs[tab].layout;
+        const at = active ?? { row: 0, col: 0 };
+        await store.setLayout(tab, { images: [...(layout.images ?? []), { id: randomId(), src, row: at.row, col: at.col, dx: 4, dy: 4, width, height }] });
+        toast("Picture added. Drag it to move it, drag its corner to resize it, Delete removes it.", "success");
+      } catch (error) {
+        toast(error instanceof Error ? error.message : "Couldn't add that picture.", "error");
+      }
+    };
+    input.click();
+  };
+
   const editLink = () => {
     if (!canEdit || !range) return;
     const current = active ? store.cell(tab, active.row, active.col)?.link?.url : undefined;
@@ -1161,6 +1199,7 @@ export function BigSheetView({
         filtered={!!store.tabs[tab].layout.filter}
         onFilter={() => setFiltering(true)}
         onLink={editLink}
+        onImage={() => void insertImage()}
         onComment={editComment}
         onQuickFormula={(name) => void quickFormula(name)}
         onSearch={() => setFinding({ replace: false })}

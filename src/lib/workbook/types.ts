@@ -124,6 +124,8 @@ export interface WorkbookSheet {
   };
   conditionalFormats?: WorkbookConditionalRule[];
   borders?: WorkbookBorder[];
+  /** Pictures floating over the cells (src is a data URL). Kept by the big-sheet grid. */
+  images?: { id: string; src: string; row: number; col: number; dx: number; dy: number; width: number; height: number }[];
   /** Zoom of the sheet, 1 = 100%. Kept by the big-sheet grid. */
   zoom?: number;
   /** A filter by the values or colours of one column (see v2/bigFilter). Kept by the big-sheet grid. */
