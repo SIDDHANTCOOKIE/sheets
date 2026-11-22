@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { addBorder, columnName, Grid, type BorderType, type GridData, type Selection } from "@formstr/sheets-grid";
 import { AlertTriangle, Loader2, Save } from "lucide-react";
-import { AUTOSAVE_ENABLED, BIG_SHEET_EDITING } from "../lib/constants";
+import { BIG_SHEET_EDITING } from "../lib/constants";
 import { BigSheetStore } from "../lib/v2/bigSheet";
 import { sortArea } from "../lib/v2/bigSort";
 import { editStructure, renameTabAndFormulas } from "../lib/v2/bigStructure";
@@ -152,13 +152,18 @@ export function BigSheetView({
   entry,
   root,
   document,
-  onSaved,
+  host,
 }: {
   entry: LibraryEntry;
   root?: SheetRootV2;
   document?: WorkbookDocument;
-  /** A small sheet was saved as this document in this event (the editor needs it to tell its own saves from other people's). */
-  onSaved?: (document: WorkbookDocument, event: { id: string; created_at: number }) => void;
+  /** The editor around a small sheet: it owns saving, so the grid reports to it (and asks it to save). */
+  host?: {
+    onStore: (store: BigSheetStore) => void;
+    onDirtyChange: (dirty: boolean) => void;
+    save: () => Promise<void>;
+    saving: boolean;
+  };
 }) {
   const library = useLibrary();
   const auth = useAuth();
@@ -220,7 +225,11 @@ export function BigSheetView({
     setReady(false);
     store
       .open()
-      .then(() => !cancelled && setReady(true))
+      .then(() => {
+        if (cancelled) return;
+        setTab(store.activeTab());
+        setReady(true);
+      })
       .catch((error) => !cancelled && setOpenError(error instanceof Error ? error.message : String(error)));
     // Toolbar state (undo/redo, dirty count) follows the store; the grid redraws itself.
     const off = store.subscribe(() => setVersion((n) => n + 1));
@@ -940,18 +949,26 @@ export function BigSheetView({
       : []),
   ];
 
+  // A small sheet's editor learns about the store and about unsaved changes.
+  useEffect(() => host?.onStore(store), [host?.onStore, store]); // eslint-disable-line react-hooks/exhaustive-deps
+  const wasDirty = useRef(false);
+  useEffect(() => {
+    const now = store.dirtyCount > 0;
+    if (now === wasDirty.current) return;
+    wasDirty.current = now;
+    host?.onDirtyChange(now);
+  }, [version, store]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Which tab is open is remembered with the sheet.
+  useEffect(() => store.setActiveTab(tab), [store, tab]);
+
   const save = useCallback(async () => {
+    if (host) {
+      if (store.dirtyCount > 0) await host.save();
+      return;
+    }
     if (store.dirtyCount === 0 || saving) return;
     setSaving(true);
     try {
-      if (store.inMemory) {
-        const saved = await store.toDocument();
-        const { event } = await library.saveDocument(entry, saved);
-        store.markSaved();
-        onSaved?.(saved, event);
-        toast("Saved.", "success");
-        return;
-      }
       const target = library.bigSheetUpload();
       if (!target.signer || target.servers.length === 0) throw new Error("Sign in and tick a storage server to save.");
       const next = await store.save({
@@ -979,17 +996,10 @@ export function BigSheetView({
     } finally {
       setSaving(false);
     }
-  }, [entry, library, onSaved, saving, store, toast]);
-
-  // A small sheet saves by itself a moment after the last change, like the other editor does.
-  const autosaveSource = store.inMemory && canEdit ? store.dirtyCount : 0;
-  useEffect(() => {
-    if (autosaveSource === 0 || saving || !AUTOSAVE_ENABLED) return;
-    const timer = window.setTimeout(() => void save(), 2500);
-    return () => window.clearTimeout(timer);
-  }, [autosaveSource, saving, save, version]);
+  }, [entry, host, library, saving, store, toast]);
 
   useEffect(() => {
+    if (host) return; // the editor around a small sheet handles Ctrl+S
     const onKey = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
@@ -998,7 +1008,7 @@ export function BigSheetView({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [save]);
+  }, [host, save]);
 
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
@@ -1280,8 +1290,8 @@ export function BigSheetView({
           Download .xlsx
         </button>
         {canEdit && (
-          <button type="button" className="btn btn-primary btn-sm" disabled={saving || store.dirtyCount === 0} onClick={() => void save()}>
-            {saving ? <Loader2 size={14} className="spin" /> : <Save size={14} />}
+          <button type="button" className="btn btn-primary btn-sm" disabled={saving || !!host?.saving || store.dirtyCount === 0} onClick={() => void save()}>
+            {saving || host?.saving ? <Loader2 size={14} className="spin" /> : <Save size={14} />}
             {store.dirtyCount ? (store.inMemory ? "Save" : `Save ${store.dirtyCount} changed chunk${store.dirtyCount === 1 ? "" : "s"}`) : "Saved"}
           </button>
         )}

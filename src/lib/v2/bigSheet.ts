@@ -918,6 +918,20 @@ export class BigSheetStore {
     return root;
   }
 
+  /** Index of the tab the sheet was left on (the first visible tab when that one is gone or hidden). */
+  activeTab(): number {
+    const at = this.tabRoots.findIndex((tab) => tab.id === this.root.activeSheetId && !tab.hidden);
+    if (at >= 0) return at;
+    const visible = this.tabRoots.findIndex((tab) => !tab.hidden);
+    return visible >= 0 ? visible : 0;
+  }
+
+  /** Remembers which tab is open (it is saved with the sheet; not a change that needs saving). */
+  setActiveTab(index: number): void {
+    const id = this.tabRoots[index]?.id;
+    if (id) this.root.activeSheetId = id;
+  }
+
   /** Everything now counts as saved (after `save`, or after an in-memory store was written out as a document). */
   markSaved(): void {
     this.metaDirty = false;
