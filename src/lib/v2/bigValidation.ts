@@ -8,6 +8,8 @@ export const RULE_TYPES = [
   { value: "number", label: "Number" },
   { value: "integer", label: "Whole number" },
   { value: "length", label: "Text length" },
+  { value: "date", label: "Date (yyyy-mm-dd)" },
+  { value: "textContains", label: "Text contains" },
 ] as const;
 
 export const OPERATORS: { value: Operator; label: string }[] = [
@@ -20,6 +22,16 @@ export const OPERATORS: { value: Operator; label: string }[] = [
   { value: "lt", label: "is less than" },
   { value: "lte", label: "is at most" },
 ];
+
+/** A date as a number of days (ISO "2026-12-31" or "2026/12/31"), or null when it is not a date. */
+function toTime(text: string): number | null {
+  const match = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/.exec(text.trim());
+  if (!match) return null;
+  const [y, m, d] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  const ms = Date.UTC(y, m - 1, d);
+  const check = new Date(ms);
+  return check.getUTCFullYear() === y && check.getUTCMonth() === m - 1 && check.getUTCDate() === d ? ms / 86_400_000 : null;
+}
 
 function compare(value: number, op: Operator, a: number, b: number): boolean {
   switch (op) {
@@ -50,7 +62,20 @@ export function validate(rule: WorkbookValidation, text: string): string | null 
     const options = rule.options ?? [];
     return options.includes(value) ? null : `Pick one of: ${options.join(", ")}.`;
   }
+  if (rule.type === "textContains") {
+    const needle = String(rule.params?.a ?? "");
+    return value.toLowerCase().includes(needle.toLowerCase()) ? null : `The text must contain "${needle}".`;
+  }
   const op = (rule.params?.op as Operator | undefined) ?? "between";
+  if (rule.type === "date") {
+    const when = toTime(value);
+    const from = toTime(String(rule.params?.a ?? ""));
+    const to = toTime(String(rule.params?.b ?? ""));
+    if (when === null) return "Enter a date like 2026-12-31.";
+    const phrase = OPERATORS.find((item) => item.value === op)?.label.replace(/^is /, "") ?? op;
+    const range = op === "between" || op === "notBetween" ? `${rule.params?.a} and ${rule.params?.b}` : String(rule.params?.a);
+    return compare(when, op, from ?? 0, to ?? 0) ? null : `The date must be ${phrase} ${range}.`;
+  }
   const a = Number(rule.params?.a ?? 0);
   const b = Number(rule.params?.b ?? 0);
   const phrase = OPERATORS.find((item) => item.value === op)?.label ?? op;
@@ -76,6 +101,17 @@ export function buildRule(
       .filter(Boolean);
     if (options.length === 0) return "Add at least one option, separated by commas.";
     return { type, options: [...new Set(options)] };
+  }
+  if (type === "textContains") {
+    if (input.a.trim() === "") return "Enter the text it must contain.";
+    return { type, params: { a: input.a.trim() } };
+  }
+  if (type === "date") {
+    const a = toTime(input.a);
+    const b = toTime(input.b);
+    if (a === null) return "Enter the date like 2026-12-31.";
+    if ((input.op === "between" || input.op === "notBetween") && b === null) return "Enter both dates like 2026-12-31.";
+    return { type, params: { op: input.op, a: input.a.trim(), b: input.b.trim() } };
   }
   const a = Number(input.a);
   const b = Number(input.b);

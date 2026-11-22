@@ -35,3 +35,28 @@ describe("data validation", () => {
     expect(buildRule("number", { list: "", op: "gt", a: "x", b: "" })).toBe("Enter a number for the limit.");
   });
 });
+
+describe("date and text-contains rules", () => {
+  const date = (op: string, a: string, b = "") => ({ type: "date", params: { op, a, b } });
+  it("compares dates", () => {
+    expect(validate(date("between", "2026-01-01", "2026-12-31"), "2026-06-15")).toBeNull();
+    expect(validate(date("between", "2026-01-01", "2026-12-31"), "2027-01-01")).toMatch(/between 2026-01-01 and 2026-12-31/);
+    expect(validate(date("gt", "2026-01-01"), "2026/1/2")).toBeNull();
+    expect(validate(date("lte", "2026-01-01"), "2026-01-02")).not.toBeNull();
+    expect(validate(date("eq", "2026-02-28"), "2026-02-28")).toBeNull();
+    expect(validate(date("gt", "2026-01-01"), "2026-02-30")).toBe("Enter a date like 2026-12-31."); // not a real day
+    expect(validate(date("gt", "2026-01-01"), "soon")).toBe("Enter a date like 2026-12-31.");
+  });
+  it("checks that text contains something, ignoring case", () => {
+    const rule = { type: "textContains", params: { a: "Ok" } };
+    expect(validate(rule, "all OK here")).toBeNull();
+    expect(validate(rule, "nope")).toMatch(/must contain "Ok"/);
+  });
+  it("builds them from the dialog and reports what is missing", () => {
+    expect(buildRule("date", { list: "", op: "gt", a: "2026-01-01", b: "" })).toEqual({ type: "date", params: { op: "gt", a: "2026-01-01", b: "" } });
+    expect(buildRule("date", { list: "", op: "between", a: "2026-01-01", b: "x" })).toMatch(/both dates/);
+    expect(buildRule("date", { list: "", op: "gt", a: "01/01/2026", b: "" })).toMatch(/2026-12-31/);
+    expect(buildRule("textContains", { list: "", op: "gt", a: " hi ", b: "" })).toEqual({ type: "textContains", params: { a: "hi" } });
+    expect(buildRule("textContains", { list: "", op: "gt", a: " ", b: "" })).toMatch(/contain/);
+  });
+});

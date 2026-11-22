@@ -43,6 +43,8 @@ export interface GridCell {
   link?: boolean;
   /** The cell has a comment (a small mark in its corner). */
   note?: boolean;
+  /** The cell holds something its validation rule does not allow (a red mark in the top-left corner). */
+  invalid?: boolean;
 }
 
 /** What the grid reads. `cell` returns undefined while the cell's data is still loading. */
@@ -520,6 +522,7 @@ export class Grid {
         }
         if (cell?.text) this.drawText(cell, left, top, w, h, fonts(style));
         if (cell?.note) this.drawNoteMark(left, top, w);
+        if (cell?.invalid) this.drawInvalidMark(left, top);
       }
     }
     ctx.strokeStyle = theme.line;
@@ -633,6 +636,17 @@ export class Grid {
       if (style?.strike) ctx.fillRect(from, ty, width, 1);
     });
     ctx.restore();
+  }
+
+  /** The small red triangle in the top-left corner of a cell whose content breaks its validation rule. */
+  private drawInvalidMark(left: number, top: number): void {
+    const { ctx } = this;
+    ctx.fillStyle = "#e5484d";
+    ctx.beginPath();
+    ctx.moveTo(left + 1, top + 1);
+    ctx.lineTo(left + 8, top + 1);
+    ctx.lineTo(left + 1, top + 8);
+    ctx.fill();
   }
 
   /** The little red corner that marks a cell with a comment. */

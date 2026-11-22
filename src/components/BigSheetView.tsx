@@ -100,7 +100,9 @@ function tabData(store: BigSheetStore, tab: number): GridData {
       const rule = formatFor(store.tabs[tab]?.layout.conditionalFormats, row, col, cell);
       const style = rule ? { ...cell?.style, ...(rule.textColor ? { color: rule.textColor } : {}), ...(rule.cellColor ? { background: rule.cellColor } : {}) } : cell?.style;
       if (!cell) return rule ? { text: "", style } : null;
-      return { text: shown(cell), style, link: !!cell.link, note: !!cell.comment };
+      // A cell that no longer fits its validation rule (typed before the rule, pasted, filled) is marked.
+      const invalid = !!cell.validation && cell.value !== undefined && validate(cell.validation, shown(cell)) !== null;
+      return { text: shown(cell), style, link: !!cell.link, note: !!cell.comment, invalid };
     },
     ensure(first, end) {
       const info = store.tabs[tab];

@@ -54,7 +54,12 @@ export function BigValidationDialog({
             ))}
           </select>
         </label>
-        {type === "list" ? (
+        {type === "textContains" ? (
+          <label className="big-dialog-field">
+            <span>The text must contain</span>
+            <input value={a} onChange={(event) => setA(event.target.value)} autoFocus />
+          </label>
+        ) : type === "list" ? (
           <label className="big-dialog-field">
             <span>Options (separated by commas)</span>
             <textarea rows={3} value={list} onChange={(event) => setList(event.target.value)} autoFocus />
@@ -68,8 +73,8 @@ export function BigValidationDialog({
                 </option>
               ))}
             </select>
-            <input value={a} onChange={(event) => setA(event.target.value)} inputMode="decimal" placeholder={range ? "from" : "number"} autoFocus />
-            {range && <input value={b} onChange={(event) => setB(event.target.value)} inputMode="decimal" placeholder="to" />}
+            <input value={a} onChange={(event) => setA(event.target.value)} inputMode={type === "date" ? "text" : "decimal"} placeholder={type === "date" ? (range ? "from yyyy-mm-dd" : "yyyy-mm-dd") : range ? "from" : "number"} autoFocus />
+            {range && <input value={b} onChange={(event) => setB(event.target.value)} inputMode={type === "date" ? "text" : "decimal"} placeholder={type === "date" ? "to yyyy-mm-dd" : "to"} />}
           </div>
         )}
         {error && <p className="big-dialog-error">{error}</p>}
