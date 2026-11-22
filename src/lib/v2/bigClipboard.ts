@@ -212,3 +212,106 @@ export async function fillArea(store: BigSheetStore, tab: number, area: Area, di
   const block = await copyBlock(store, tab, source);
   return writeBlock(store, tab, block, target);
 }
+
+// ---- fill handle ------------------------------------------------------------------------------
+
+export type SeriesValue = number | string | undefined;
+
+/**
+ * The next `count` values of a series the cells start, or null when they are not one (then the fill
+ * just repeats them). Numbers continue an arithmetic series (2 cells or more with the same step), and
+ * text ending in a number ("Item 1", "Q2") counts up, keeping its zero padding ("001" -> "002").
+ */
+export function extendSeries(source: unknown[], count: number): SeriesValue[] | null {
+  const n = source.length;
+  if (n === 0 || source.some((v) => v === undefined || v === "")) return null;
+  const same = (a: number, b: number) => Math.abs(a - b) < 1e-9 * Math.max(1, Math.abs(a), Math.abs(b));
+  if (source.every((v) => typeof v === "number")) {
+    const nums = source as number[];
+    if (n < 2) return null;
+    const step = nums[1] - nums[0];
+    for (let i = 2; i < n; i++) if (!same(nums[i] - nums[i - 1], step)) return null;
+    return Array.from({ length: count }, (_, i) => Number((nums[n - 1] + step * (i + 1)).toPrecision(12)));
+  }
+  if (source.every((v) => typeof v === "string")) {
+    const parts = (source as string[]).map((text) => /^(.*?)(\d+)$/.exec(text));
+    if (parts.some((p) => !p)) return null;
+    const found = parts as RegExpExecArray[];
+    const prefix = found[0][1];
+    if (found.some((p) => p[1] !== prefix)) return null;
+    const nums = found.map((p) => Number(p[2]));
+    const step = n === 1 ? 1 : nums[1] - nums[0];
+    for (let i = 2; i < n; i++) if (nums[i] - nums[i - 1] !== step) return null;
+    const width = found[n - 1][2].length;
+    const padded = found[n - 1][2].startsWith("0") && width > 1;
+    return Array.from({ length: count }, (_, i) => {
+      const next = nums[n - 1] + step * (i + 1);
+      if (next < 0) return prefix + String(next);
+      return prefix + (padded ? String(next).padStart(width, "0") : String(next));
+    });
+  }
+  return null;
+}
+
+/**
+ * Fills out from `source` to `extended` (which holds `source` and goes further down or to the right),
+ * as dragging the fill handle does: numbers and numbered text continue their series, formulas are
+ * copied with their references moved, everything else is repeated. One undo step.
+ * Returns the area written.
+ */
+export async function dragFill(store: BigSheetStore, tab: number, source: Area, extended: Area): Promise<Area | null> {
+  const down = extended.r2 > source.r2;
+  const right = extended.c2 > source.c2;
+  if (!down && !right) return null;
+  const target: Area = down ? { ...extended, r1: source.r2 + 1, c1: source.c1, c2: source.c2 } : { ...extended, c1: source.c2 + 1, r1: source.r1, r2: source.r2 };
+  checkFits(target);
+  const block = await copyBlock(store, tab, source);
+  const along = down ? block.rows : block.cols;
+  const lines = down ? block.cols : block.rows;
+  const count = down ? target.r2 - target.r1 + 1 : target.c2 - target.c1 + 1;
+
+  // For each line (column when filling down): the series, if the cells make one.
+  const series: (SeriesValue[] | null)[] = [];
+  for (let line = 0; line < lines; line++) {
+    const cells = Array.from({ length: along }, (_, k) => (down ? block.cells[k][line] : block.cells[line][k]));
+    if (cells.some((cell) => cell?.formula)) {
+      series.push(null);
+      continue;
+    }
+    series.push(extendSeries(cells.map((cell) => cell?.value), count));
+  }
+  const shifted = new Map<string, string>();
+  for (let r = target.r1; r <= target.r2; r++) {
+    for (let c = target.c1; c <= target.c2; c++) {
+      const line = down ? c - source.c1 : r - source.r1;
+      const offset = down ? r - source.r1 : c - source.c1;
+      const k = offset % along;
+      const from = down ? block.cells[k][line] : block.cells[line][k];
+      if (!series[line] && from?.formula) {
+        const dr = down ? r - (source.r1 + k) : 0;
+        const dc = down ? 0 : c - (source.c1 + k);
+        shifted.set(`${r}:${c}`, await shiftFormula(from.formula, dr, dc));
+      }
+    }
+  }
+  await store.edit(tab, target.r1, target.c1, target.r2, target.c2, (_before, r, c) => {
+    const line = down ? c - source.c1 : r - source.r1;
+    const offset = down ? r - source.r1 : c - source.c1;
+    const k = offset % along;
+    const from = down ? block.cells[k][line] : block.cells[line][k];
+    const values = series[line];
+    if (values) {
+      const last = down ? block.cells[along - 1][line] : block.cells[line][along - 1];
+      const { formula: _formula, display: _display, ...rest } = structuredClone(last ?? {});
+      void _formula;
+      void _display;
+      return { ...rest, value: values[(down ? r - target.r1 : c - target.c1)] as WorkbookCell["value"] };
+    }
+    if (!from) return undefined;
+    const cell = structuredClone(from);
+    const formula = shifted.get(`${r}:${c}`);
+    if (formula !== undefined) cell.formula = formula;
+    return cell;
+  });
+  return target;
+}

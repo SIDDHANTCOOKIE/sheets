@@ -28,7 +28,7 @@
     "Cells and rows": {
       "copy, cut, paste": "done",
       "fill down / right (Ctrl+D, Ctrl+R)": "done",
-      "fill handle drag with series": "todo",
+      "fill handle drag with series": "done",
       "insert rows": "done",
       "delete rows": "done",
       "insert columns": "done",

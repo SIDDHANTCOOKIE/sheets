@@ -12,6 +12,7 @@ import { calculateTyped, FormulaIndex, pointRect, refreshDependents, type Change
 import {
   copyBlock,
   copyBlockNow,
+  dragFill,
   fillArea,
   fromTsv,
   isLoadedArea,
@@ -320,6 +321,15 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
               anchor: { row: done.r1, col: done.c1 },
             });
             await refreshRef.current([written], true);
+          })
+          .catch((error) => toast(error instanceof Error ? error.message : String(error), "error"));
+      },
+      onFillDrag: (source, extended) => {
+        if (!live.current.canEdit) return;
+        const tabNo = live.current.tab;
+        dragFill(store, tabNo, source, extended)
+          .then(async (done) => {
+            if (done) await refreshRef.current([{ tab: tabNo, ...done }], true);
           })
           .catch((error) => toast(error instanceof Error ? error.message : String(error), "error"));
       },

@@ -5,6 +5,7 @@ import { calculateTyped, FormulaIndex } from "./bigFormulas";
 import { editStructure, renameTabAndFormulas } from "./bigStructure";
 import { sortArea } from "./bigSort";
 import { BLANK, rowsToHide, scanColumn } from "./bigFilter";
+import { dragFill, extendSeries } from "./bigClipboard";
 import { editLayout } from "./layoutEdit";
 import { fakeBlossom, localSigner } from "./testUtils";
 import { buildLargeXlsx } from "../xlsxStream/testFixtures";
@@ -346,5 +347,56 @@ describe("filtering by a column", () => {
     expect(editLayout({ filter }, { kind: "insert", axis: "row", index: 2, count: 1 }).filter?.hidden[0]).toBe(hidden[0] + 1);
     expect(editLayout({ filter }, { kind: "insert", axis: "col", index: 0, count: 1 }).filter?.col).toBe(9);
     expect(editLayout({ filter }, { kind: "delete", axis: "col", index: 8, count: 1 }).filter).toBeUndefined();
+  }, 120_000);
+});
+
+describe("fill handle", () => {
+  it("continues numbers and numbered text, and repeats the rest", () => {
+    expect(extendSeries([1, 2, 3], 3)).toEqual([4, 5, 6]);
+    expect(extendSeries([10, 8], 2)).toEqual([6, 4]);
+    expect(extendSeries([0.1, 0.2], 1)).toEqual([0.3]);
+    expect(extendSeries([5], 2)).toBeNull(); // one number repeats
+    expect(extendSeries([1, 2, 4], 2)).toBeNull(); // not a steady step
+    expect(extendSeries(["Item 1"], 3)).toEqual(["Item 2", "Item 3", "Item 4"]);
+    expect(extendSeries(["Q1", "Q2"], 2)).toEqual(["Q3", "Q4"]);
+    expect(extendSeries(["a007"], 2)).toEqual(["a008", "a009"]);
+    expect(extendSeries(["a", "b"], 2)).toBeNull();
+    expect(extendSeries(["x1", "y2"], 2)).toBeNull();
+    expect(extendSeries([1, undefined], 2)).toBeNull();
+  });
+
+  it("fills down and right, shifting formulas, and undoes in one step", async () => {
+    const { store } = await open("struct-fill");
+    await store.load(0, 0);
+    const set = (r: number, c: number, text: string) => store.setCell(0, r, c, text);
+    await set(10, 0, "1");
+    await set(11, 0, "3"); // step 2
+    await set(10, 1, "Week 1"); // text series
+    await set(10, 2, "x"); // repeats
+    await set(11, 2, "y");
+    await store.edit(0, 10, 3, 10, 3, () => ({ formula: "A11*10", value: 10 }));
+
+    const done = await dragFill(store, 0, { r1: 10, c1: 0, r2: 11, c2: 2 }, { r1: 10, c1: 0, r2: 15, c2: 2 });
+    expect(done).toEqual({ r1: 12, c1: 0, r2: 15, c2: 2 });
+    expect([12, 13, 14, 15].map((r) => store.cell(0, r, 0)?.value)).toEqual([5, 7, 9, 11]);
+    // Two different texts that are not a series repeat in turn.
+    expect([12, 13].map((r) => store.cell(0, r, 1)?.value)).toEqual([store.cell(0, 10, 1)?.value, store.cell(0, 11, 1)?.value]);
+    expect([12, 13, 14, 15].map((r) => store.cell(0, r, 2)?.value)).toEqual(["x", "y", "x", "y"]);
+
+    // A formula copied down moves its relative references.
+    const f = await dragFill(store, 0, { r1: 10, c1: 3, r2: 10, c2: 3 }, { r1: 10, c1: 3, r2: 12, c2: 3 });
+    expect(f).toEqual({ r1: 11, c1: 3, r2: 12, c2: 3 });
+    expect(store.cell(0, 11, 3)?.formula).toBe("A12*10");
+    expect(store.cell(0, 12, 3)?.formula).toBe("A13*10");
+
+    // Right: "Week 1" continues across.
+    await dragFill(store, 0, { r1: 10, c1: 1, r2: 10, c2: 1 }, { r1: 10, c1: 1, r2: 10, c2: 1 }); // nothing to extend
+    store.undo();
+    expect(store.cell(0, 12, 3)?.formula).toBeUndefined();
+    expect(await dragFill(store, 0, { r1: 10, c1: 1, r2: 10, c2: 1 }, { r1: 10, c1: 1, r2: 10, c2: 1 })).toBeNull();
+    await dragFill(store, 0, { r1: 20, c1: 0, r2: 20, c2: 0 }, { r1: 20, c1: 0, r2: 20, c2: 3 });
+    await set(30, 1, "Week 1");
+    await dragFill(store, 0, { r1: 30, c1: 1, r2: 30, c2: 1 }, { r1: 30, c1: 1, r2: 30, c2: 4 });
+    expect([2, 3, 4].map((c) => store.cell(0, 30, c)?.value)).toEqual(["Week 2", "Week 3", "Week 4"]);
   }, 120_000);
 });

@@ -101,6 +101,8 @@ export interface GridOptions {
   onCopy?(range: Range, cut: boolean): string | Promise<string | undefined> | undefined;
   /** Ctrl+V: the clipboard's text and the selection it goes into. */
   onPaste?(text: string, selection: Selection): void;
+  /** The fill handle (small square at the selection's corner) was dragged: fill `source` out to `extended` (which contains it). */
+  onFillDrag?(source: Range, extended: Range): void;
   /** Ctrl+D (down) / Ctrl+R (right). */
   onFill?(direction: "down" | "right", selection: Selection): void;
   /** Cells to look at for Ctrl+arrow (does the cell hold anything?). */
@@ -162,7 +164,9 @@ export class Grid {
   private data: GridData;
   private unsubscribe?: () => void;
   private observer?: ResizeObserver;
-  private drag: { kind: "cells" | "row" | "col"; from: number } | { kind: "resize"; axis: "row" | "col"; index: number; start: number; size: number } | null = null;
+  /** While the fill handle is dragged: the range it would fill. */
+  private fillPreview: Range | null = null;
+  private drag: { kind: "cells" | "row" | "col"; from: number } | { kind: "fill"; source: Range } | { kind: "resize"; axis: "row" | "col"; index: number; start: number; size: number } | null = null;
 
   constructor(parent: HTMLElement, options: GridOptions) {
     this.options = options;
@@ -693,6 +697,23 @@ export class Grid {
       ctx.lineWidth = 2;
       ctx.strokeRect(rect.left + 1, rect.top + 1, rect.width - 2, rect.height - 2);
     }
+    // The fill handle sits at the corner of the last range; while dragging, the area it would fill is outlined.
+    const last = sel.ranges[sel.ranges.length - 1];
+    const corner = rectOf(last.r2, last.c2, last.r2, last.c2);
+    if (corner && this.options.onFillDrag) {
+      ctx.fillStyle = theme.selection;
+      ctx.fillRect(corner.left + corner.width - 4, corner.top + corner.height - 4, 7, 7);
+    }
+    if (this.fillPreview) {
+      const box = rectOf(this.fillPreview.r1, this.fillPreview.c1, this.fillPreview.r2, this.fillPreview.c2);
+      if (box) {
+        ctx.setLineDash([4, 3]);
+        ctx.strokeStyle = theme.selection;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(box.left + 1, box.top + 1, box.width - 2, box.height - 2);
+        ctx.setLineDash([]);
+      }
+    }
     // The active cell is drawn without the tint so it reads as "where typing goes".
     const block = this.merges.at(sel.active.row, sel.active.col);
     const active = block
@@ -801,11 +822,34 @@ export class Grid {
     return null;
   }
 
+  /** The selected range when the point (grid px, unzoomed) is on its fill handle. */
+  private fillHandleHit(px: number, py: number): Range | null {
+    const sel = this.selection;
+    if (!sel || !this.options.onFillDrag) return null;
+    const range = sel.ranges[sel.ranges.length - 1];
+    // Only for a range that is on screen with a visible bottom-right cell.
+    if (range.r2 >= this.rows.length || range.c2 >= this.cols.length || this.rows.size(range.r2) === 0 || this.cols.size(range.c2) === 0) return null;
+    const z = this.zoom;
+    const box = this.cellRect({ row: range.r2, col: range.c2 });
+    const x = (box.x + box.width) / z;
+    const y = (box.y + box.height) / z;
+    return Math.abs(px - x) <= 6 && Math.abs(py - y) <= 6 ? range : null;
+  }
+
   private onPointerDown = (event: PointerEvent): void => {
     if (event.button !== 0) return;
     const hit = this.hit(event.clientX, event.clientY);
     // The scrollbars sit inside the scroller; ignore presses on them.
     if (hit.px >= this.width || hit.py >= this.height) return;
+    const handle = this.fillHandleHit(hit.px, hit.py);
+    if (handle) {
+      this.focus();
+      this.drag = { kind: "fill", source: handle };
+      this.fillPreview = null;
+      this.scroller.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      return;
+    }
     if (!hit.onRowHead && !hit.onColHead && this.options.onReference?.({ row: hit.row, col: hit.col })) {
       event.preventDefault();
       return;
@@ -838,10 +882,21 @@ export class Grid {
     const drag = this.drag;
     if (!drag) {
       const over = this.edge(hit);
-      this.scroller.style.cursor = over ? (over.axis === "col" ? "col-resize" : "row-resize") : "";
+      this.scroller.style.cursor = over ? (over.axis === "col" ? "col-resize" : "row-resize") : this.fillHandleHit(hit.px, hit.py) ? "crosshair" : "";
       return;
     }
     const bounds = { rows: this.rows, cols: this.cols };
+    if (drag.kind === "fill") {
+      const src = drag.source;
+      const below = hit.row - src.r2;
+      const right = hit.col - src.c2;
+      // Extend along the axis the pointer moved furthest on (down or right only).
+      if (below > 0 && below >= right) this.fillPreview = { ...src, r2: hit.row };
+      else if (right > 0) this.fillPreview = { ...src, c2: hit.col };
+      else this.fillPreview = null;
+      this.schedule();
+      return;
+    }
     if (drag.kind === "resize") {
       const delta = ((drag.axis === "col" ? event.clientX : event.clientY) - drag.start) / this.zoom;
       const size = Math.max(MIN_SIZE, Math.round(drag.size + delta));
@@ -861,6 +916,16 @@ export class Grid {
     const drag = this.drag;
     this.drag = null;
     if (this.scroller.hasPointerCapture(event.pointerId)) this.scroller.releasePointerCapture(event.pointerId);
+    if (drag?.kind === "fill") {
+      const preview = this.fillPreview;
+      this.fillPreview = null;
+      this.schedule();
+      if (preview) {
+        this.options.onFillDrag?.(drag.source, preview);
+        this.select({ ranges: [preview], active: { row: preview.r1, col: preview.c1 }, anchor: { row: preview.r1, col: preview.c1 } }, false);
+      }
+      return;
+    }
     if (drag?.kind === "resize") {
       const size = drag.axis === "col" ? this.cols.size(drag.index) : this.rows.size(drag.index);
       this.options.onResize?.(drag.axis === "col" ? "col" : "row", drag.index, size);
