@@ -3745,6 +3745,13 @@ pre {
 .big-cell.is-selected { outline: 2px solid #0188fb; outline-offset: -1px; z-index: 1; }
 .big-cell.is-in-range { background-image: linear-gradient(rgba(1, 136, 251, 0.1), rgba(1, 136, 251, 0.1)); }
 .big-cell-input { z-index: 2; padding: 0 3px; font-size: 11pt; border: 2px solid #0188fb; background: #fff; color: #000; outline: none; box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2); }
+.big-cell-input.is-formula { color: transparent; caret-color: #000; }
+.big-cell-input.is-formula::selection { background: rgba(1, 136, 251, 0.25); color: transparent; }
+.big-cell-hl { position: absolute; z-index: 3; box-sizing: border-box; padding: 0 3px; border: 2px solid transparent; font-family: var(--font), Arial, sans-serif; font-size: 11pt; white-space: pre; overflow: hidden; pointer-events: none; display: flex; align-items: center; color: #000; }
+.big-cell-hl > span { display: inline-block; }
+.big-cell-hl .ft-function { font-weight: 700; }
+.big-cell-hl .ft-string { color: #15803d; }
+.big-cell-hl .ft-number { color: #1d4ed8; }
 .big-row-head, .big-col-head, .big-corner { background: #f8f9fa; color: #5f6368; text-align: center; z-index: 3; border-right: 1px solid #d4d4d4; border-bottom: 1px solid #d4d4d4; font-size: 12px; font-variant-numeric: tabular-nums; }
 .big-row-head { left: 0; line-height: 29px; font-size: 11px; }
 .big-col-head { top: 0; line-height: 27px; }

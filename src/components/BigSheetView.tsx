@@ -206,6 +206,10 @@ export function BigSheetView({
   const cancelled = useRef(false);
   /** The cells of the last copy, so pasting them keeps formulas and formats. */
   const clipboard = useRef<Block | null>(null);
+  /** The formula text before a reference was picked by click or drag (a drag rewrites the reference after it). */
+  const refBase = useRef<string | null>(null);
+  /** How far the cell editor's text is scrolled sideways (the colour layer follows it). */
+  const [editScroll, setEditScroll] = useState(0);
   const canEdit = BIG_SHEET_EDITING && !!entry.editKey;
   // The grid's callbacks are created once, so they read the latest state through these refs.
   const live = useRef({ canEdit, editing, painting, tab });
@@ -337,8 +341,17 @@ export function BigSheetView({
         // While a formula waits for an operand ("=", "=A1+", "=SUM("), a click inserts that cell's address.
         const current = live.current.editing;
         if (!current || !/^=(?:.*[-+*/^&(,<>=:;])?$/.test(current.text)) return false;
+        refBase.current = current.text;
         setEditing({ ...current, text: `${current.text}${columnName(cell.col)}${cell.row + 1}` });
         return true;
+      },
+      onReferenceDrag: (from, to) => {
+        const current = live.current.editing;
+        if (!current || refBase.current === null) return;
+        const a = `${columnName(from.col)}${from.row + 1}`;
+        const b = `${columnName(to.col)}${to.row + 1}`;
+        const range = a === b ? a : `${columnName(Math.min(from.col, to.col))}${Math.min(from.row, to.row) + 1}:${columnName(Math.max(from.col, to.col))}${Math.max(from.row, to.row) + 1}`;
+        setEditing({ ...current, text: refBase.current + range });
       },
       onZoom: (zoom) => {
         // Zoom is a view setting: it is remembered with the sheet when it can be edited.
@@ -1390,11 +1403,31 @@ export function BigSheetView({
             ))}
           </datalist>
         )}
+        {editing && editRect && editing.text.startsWith("=") && (
+          // The formula's references and functions in colour, drawn over the (transparent-text) input.
+          <div className="big-cell-hl" style={{ top: editRect.y, left: editRect.x, width: Math.max(editRect.width, 120), height: editRect.height }} aria-hidden>
+            <span style={{ transform: `translateX(${-editScroll}px)` }}>
+              {["=", ...tokenizeFormula(editing.text.slice(1))].map((token, i) =>
+                typeof token === "string" ? (
+                  <span key={i} className="ft-operator">
+                    {token}
+                  </span>
+                ) : (
+                  <span key={i} className={`ft-${token.kind}`} style={token.kind === "ref" ? { color: REF_COLORS[(token.color ?? 0) % REF_COLORS.length] } : undefined}>
+                    {token.text}
+                  </span>
+                ),
+              )}
+            </span>
+          </div>
+        )}
         {editing && editRect && (
           <input
-            className="big-cell-input"
+            className={`big-cell-input${editing.text.startsWith("=") ? " is-formula" : ""}`}
             style={{ top: editRect.y, left: editRect.x, width: Math.max(editRect.width, 120), height: editRect.height }}
             autoFocus
+            onSelect={(event) => setEditScroll(event.currentTarget.scrollLeft)}
+            onKeyUp={(event) => setEditScroll(event.currentTarget.scrollLeft)}
             value={editing.text}
             list={store.cell(tab, editing.row, editing.col)?.validation?.type === "list" ? "big-validation-options" : undefined}
             onChange={(event) => {

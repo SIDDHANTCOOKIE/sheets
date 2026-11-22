@@ -127,6 +127,8 @@ export interface GridOptions {
    * cell's address): the grid then leaves the selection and focus alone.
    */
   onReference?(cell: Cell): boolean;
+  /** The pointer that picked a reference (see onReference) moved to another cell: the reference is now the range from `from` to `to`. */
+  onReferenceDrag?(from: Cell, to: Cell): void;
   /** Ctrl+wheel or Ctrl +/-/0 changed the zoom (1 = 100%). */
   onZoom?(zoom: number): void;
   /** Right-click: where (page coordinates) and on which row/column or header. The selection has already been adjusted. */
@@ -180,7 +182,7 @@ export class Grid {
   private observer?: ResizeObserver;
   /** While the fill handle is dragged: the range it would fill. */
   private fillPreview: Range | null = null;
-  private drag: { kind: "cells" | "row" | "col"; from: number } | { kind: "fill"; source: Range } | { kind: "move"; source: Range; grab: Cell } | { kind: "resize"; axis: "row" | "col"; index: number; start: number; size: number } | null = null;
+  private drag: { kind: "cells" | "row" | "col"; from: number } | { kind: "fill"; source: Range } | { kind: "move"; source: Range; grab: Cell } | { kind: "resize"; axis: "row" | "col"; index: number; start: number; size: number } | { kind: "reference"; from: Cell } | null = null;
 
   constructor(parent: HTMLElement, options: GridOptions) {
     this.options = options;
@@ -1008,6 +1010,8 @@ export class Grid {
       return;
     }
     if (!hit.onRowHead && !hit.onColHead && this.options.onReference?.({ row: hit.row, col: hit.col })) {
+      this.drag = { kind: "reference", from: { row: hit.row, col: hit.col } };
+      this.scroller.setPointerCapture(event.pointerId);
       event.preventDefault();
       return;
     }
@@ -1043,6 +1047,10 @@ export class Grid {
       return;
     }
     const bounds = { rows: this.rows, cols: this.cols };
+    if (drag.kind === "reference") {
+      this.options.onReferenceDrag?.(drag.from, { row: hit.row, col: hit.col });
+      return;
+    }
     if (drag.kind === "move") {
       const dr = Math.max(-drag.source.r1, Math.min(this.rows.length - 1 - drag.source.r2, hit.row - drag.grab.row));
       const dc = Math.max(-drag.source.c1, Math.min(this.cols.length - 1 - drag.source.c2, hit.col - drag.grab.col));
