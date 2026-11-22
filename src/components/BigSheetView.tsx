@@ -33,6 +33,7 @@ import { BigFilterDialog } from "./BigFilterDialog";
 import { BigSortDialog } from "./BigSortDialog";
 import { formatFor, withoutArea } from "../lib/v2/bigConditional";
 import { validate } from "../lib/v2/bigValidation";
+import { helpFor, tokenizeFormula } from "../lib/v2/formulaHelp";
 import { BigSheetToolbar, shiftDecimals, type StylePatch } from "./BigSheetToolbar";
 import { useLibrary } from "../providers/LibraryProvider";
 import { useToast } from "../providers/ToastProvider";
@@ -54,6 +55,9 @@ function parseReference(text: string): { r1: number; c1: number; r2: number; c2:
   if (r1 < 0 || r2 < 0) return null;
   return { r1: Math.min(r1, r2), c1: Math.min(c1, c2), r2: Math.max(r1, r2), c2: Math.max(c1, c2) };
 }
+
+/** Colours for the cells a formula points at (the same cell always gets the same colour). */
+const REF_COLORS = ["#2563eb", "#dc2626", "#16a34a", "#9333ea", "#ea580c", "#0891b2", "#c026d3", "#65a30d"];
 
 /** A cell after a style change: the cached display text is dropped so the new number format shows. */
 function restyle(cell: WorkbookCell | undefined, patch: StylePatch): WorkbookCell {
@@ -854,6 +858,8 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
     const found = functionList.filter((name) => name.startsWith(upper) && name !== upper);
     return found.slice(0, 8);
   })();
+  /** Which function the cursor is in while a formula is typed, with its arguments. */
+  const help = editing ? helpFor(editing.text) : null;
   /** Replaces the word being typed with the chosen function and an opening bracket. */
   const acceptSuggestion = (name: string) => {
     if (!editing) return;
@@ -991,7 +997,13 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
         />
         <span className="big-sheet-fx">fx</span>
         <span className="big-sheet-formula">
-          {selectedCell?.formula ? `=${selectedCell.formula.replace(/^=/, "")}` : shown(selectedCell)}
+          {selectedCell?.formula
+            ? [{ text: "=", kind: "operator" as const, color: undefined as number | undefined }, ...tokenizeFormula(selectedCell.formula.replace(/^=/, ""))].map((token, i) => (
+                <span key={i} className={`ft-${token.kind}`} style={token.kind === "ref" ? { color: REF_COLORS[(token.color ?? 0) % REF_COLORS.length] } : undefined}>
+                  {token.text}
+                </span>
+              ))
+            : shown(selectedCell)}
         </span>
         <input
           className="big-sheet-goto"
@@ -1116,6 +1128,18 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
       )}
       <div className="big-sheet-scroll big-sheet-canvas">
         <div ref={hostRef} className="big-sheet-host" />
+        {editing && editRect && help && (
+          <div className="big-help" style={{ top: Math.max(0, editRect.y - 30), left: editRect.x }} role="status">
+            <b>{help.name}</b>(
+            {help.args.map((arg, i) => (
+              <span key={i}>
+                {i > 0 && ", "}
+                <span className={i === help.current ? "big-help-current" : undefined}>{arg}</span>
+              </span>
+            ))}
+            )
+          </div>
+        )}
         {editing && editRect && suggestions.length > 0 && (
           <ul className="big-suggest" style={{ top: editRect.y + editRect.height, left: editRect.x }} role="listbox">
             {suggestions.map((name, index) => (
