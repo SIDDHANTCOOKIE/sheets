@@ -43,6 +43,8 @@ export interface GridCell {
   style?: GridCellStyle;
   /** The cell is a hyperlink (drawn blue and underlined). */
   link?: boolean;
+  /** Drawn as a rounded label instead of plain text: a person (with an initial) or a tag. */
+  pill?: { label: string; bg: string; fg: string; avatar: boolean };
   /** The cell holds a number (shown to the right unless aligned otherwise, whatever its format looks like). */
   numeric?: boolean;
   /** The cell has a comment (a small mark in its corner). */
@@ -528,7 +530,8 @@ export class Grid {
           ctx.fillStyle = style.bar.color;
           ctx.fillRect(left + 1, top + 3, Math.max(1, (w - 2) * style.bar.fraction), h - 6);
         }
-        if (cell?.text) this.drawText(cell, left, top, w, h, fonts(style));
+        if (cell?.pill) this.drawPill(cell, left, top, w, h);
+        else if (cell?.text) this.drawText(cell, left, top, w, h, fonts(style));
         if (cell?.note) this.drawNoteMark(left, top, w);
         if (cell?.invalid) this.drawInvalidMark(left, top);
       }
@@ -646,6 +649,60 @@ export class Grid {
     ctx.restore();
   }
 
+  /** A person or tag shown as a rounded label (with a round initial for a person). */
+  private drawPill(cell: GridCell, left: number, top: number, w: number, h: number): void {
+    const { ctx } = this;
+    const pill = cell.pill;
+    if (!pill || w < 14 || h < 10) return;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(left + 1, top + 1, w - 2, h - 2);
+    ctx.clip();
+    const font = "500 11px Inter, 'Segoe UI', sans-serif";
+    ctx.font = font;
+    const padX = 7;
+    const avatar = pill.avatar ? 14 : 0;
+    const gap = pill.avatar ? 5 : 0;
+    const room = Math.max(8, w - 4 - padX * 2 - avatar - gap - 4);
+    let text = pill.label;
+    while (text.length > 1 && ctx.measureText(text).width > room) text = text.slice(0, -1);
+    if (text !== pill.label) text += "…";
+    const height = Math.min(h - 6, 20);
+    const width = Math.min(w - 4, Math.ceil(ctx.measureText(text).width + padX * 2 + avatar + gap));
+    const x = left + 2;
+    const y = top + (h - height) / 2;
+    const r = height / 2;
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + width, y, x + width, y + height, r);
+    ctx.arcTo(x + width, y + height, x, y + height, r);
+    ctx.arcTo(x, y + height, x, y, r);
+    ctx.arcTo(x, y, x + width, y, r);
+    ctx.closePath();
+    ctx.fillStyle = pill.bg;
+    ctx.fill();
+    let textX = x + padX;
+    ctx.textBaseline = "middle";
+    ctx.textAlign = "left";
+    if (pill.avatar) {
+      const cx = textX + avatar / 2;
+      ctx.beginPath();
+      ctx.arc(cx, y + height / 2, avatar / 2, 0, Math.PI * 2);
+      ctx.fillStyle = pill.fg;
+      ctx.fill();
+      ctx.fillStyle = pill.bg;
+      ctx.font = "700 8px Inter, 'Segoe UI', sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText((pill.label.trim()[0] ?? "?").toUpperCase(), cx, y + height / 2 + 0.5);
+      ctx.textAlign = "left";
+      textX += avatar + gap;
+    }
+    ctx.fillStyle = pill.fg;
+    ctx.font = font;
+    ctx.fillText(text, textX, y + height / 2 + 0.5);
+    ctx.restore();
+  }
+
   /** The small red triangle in the top-left corner of a cell whose content breaks its validation rule. */
   private drawInvalidMark(left: number, top: number): void {
     const { ctx } = this;
@@ -747,7 +804,8 @@ export class Grid {
       ctx.fillStyle = theme.background;
       const cell = this.data.cell(sel.active.row, sel.active.col);
       ctx.fillRect(active.left + 2, active.top + 2, active.width - 4, active.height - 4);
-      if (cell?.text) {
+      if (cell?.pill) this.drawPill(cell, active.left, active.top, active.width, active.height);
+      else if (cell?.text) {
         this.drawText(cell, active.left, active.top, active.width, active.height, `${cell.style?.bold ? "700 " : ""}${Math.min(cell.style?.fontSize ?? 11, 24) * (96 / 72)}px ${theme.font}`);
       }
     }

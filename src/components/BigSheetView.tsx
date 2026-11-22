@@ -27,6 +27,11 @@ import type { LibraryEntry } from "../lib/types";
 import type { WorkbookCell } from "../lib/workbook";
 import { cellDisplay } from "../lib/workbook/format";
 import { BigFindBar } from "./BigFindBar";
+import { PersonDialog, TagDialog, type PersonChoice } from "./CellMetaDialogs";
+import { useAuth } from "../providers/AuthProvider";
+import { useProfiles } from "../providers/ProfileProvider";
+import { colorFromString, shortNpub, toNpub } from "../lib/utils";
+import type { UserRef } from "../lib/types";
 import { BigValidationDialog } from "./BigValidationDialog";
 import { BigConditionalDialog } from "./BigConditionalDialog";
 import { BigFilterDialog } from "./BigFilterDialog";
@@ -121,7 +126,12 @@ function tabData(store: BigSheetStore, tab: number): GridData {
       if (!cell) return rule ? { text: "", style } : null;
       // A cell that no longer fits its validation rule (typed before the rule, pasted, filled) is marked.
       const invalid = !!cell.validation && cell.value !== undefined && validate(cell.validation, shown(cell)) !== null;
-      return { text: shown(cell), style, link: !!cell.link, note: !!cell.comment, invalid, numeric: typeof cell.value === "number" };
+      const pill = cell.person
+        ? { label: cell.person.name || shown(cell) || shortNpub(cell.person.pubkey), ...colorFromString(cell.person.name || shown(cell) || cell.person.pubkey), avatar: true }
+        : cell.tag
+          ? { label: cell.tag, ...colorFromString(cell.tag), avatar: false }
+          : undefined;
+      return { text: shown(cell), style, link: !!cell.link, note: !!cell.comment, invalid, numeric: typeof cell.value === "number", pill };
     },
     ensure(first, end) {
       const info = store.tabs[tab];
@@ -136,6 +146,8 @@ function tabData(store: BigSheetStore, tab: number): GridData {
 
 export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: SheetRootV2 }) {
   const library = useLibrary();
+  const auth = useAuth();
+  const profiles = useProfiles();
   const { toast } = useToast();
   // Created once per root: recreating it (e.g. when the server list loads) would drop unsaved edits.
   const serversRef = useRef(library.blossomServers);
@@ -150,6 +162,7 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   const [editing, setEditing] = useState<{ row: number; col: number; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [validating, setValidating] = useState(false);
+  const [metaDialog, setMetaDialog] = useState<"person" | "tag" | null>(null);
   /** Manual calculation: edits do not refresh other formulas until F9 (or the Recalculate button). */
   const [manualCalc, setManualCalc] = useState(false);
   const [stale, setStale] = useState(false);
@@ -677,6 +690,60 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
     }
   };
 
+  /** Everyone who can be tagged: the owner, the people the sheet is shared with, and you. */
+  const peopleChoices = useMemo<PersonChoice[]>(() => {
+    const map = new Map<string, PersonChoice>();
+    if (entry.ownerPubkey) {
+      const profile = profiles.profiles.get(entry.ownerPubkey);
+      map.set(entry.ownerPubkey, {
+        pubkey: entry.ownerPubkey,
+        npub: toNpub(entry.ownerPubkey),
+        name: profile?.displayName || profile?.name || entry.ownerName,
+        picture: profile?.picture || entry.ownerPicture,
+        role: "owner",
+      });
+    }
+    for (const person of entry.sharedWith ?? []) {
+      const profile = profiles.profiles.get(person.pubkey);
+      map.set(person.pubkey, {
+        pubkey: person.pubkey,
+        npub: person.npub,
+        name: profile?.displayName || profile?.name || person.name,
+        picture: profile?.picture || person.picture,
+        role: person.role,
+      });
+    }
+    if (auth.pubkey && !map.has(auth.pubkey)) {
+      const profile = profiles.profiles.get(auth.pubkey);
+      map.set(auth.pubkey, {
+        pubkey: auth.pubkey,
+        npub: auth.npub || toNpub(auth.pubkey),
+        name: profile?.displayName || profile?.name,
+        picture: profile?.picture,
+        role: entry.role === "owner" ? "owner" : entry.role === "editor" ? "editor" : "viewer",
+      });
+    }
+    return Array.from(map.values());
+  }, [auth.npub, auth.pubkey, entry, profiles.profiles]);
+
+  /** Writes a person into the selected cells (their name is the cell's text). */
+  const applyPerson = (user: UserRef) => {
+    const label = user.name || shortNpub(user.pubkey);
+    editRange((cell) => {
+      const { tag: _tag, ...rest } = cell ?? {};
+      void _tag;
+      return { ...rest, value: label, person: { pubkey: user.pubkey, npub: user.npub, name: user.name, picture: user.picture } };
+    });
+  };
+  /** Writes a tag into the selected cells. */
+  const applyTag = (tag: string) => {
+    editRange((cell) => {
+      const { person: _person, ...rest } = cell ?? {};
+      void _person;
+      return { ...rest, value: tag, tag };
+    });
+  };
+
   /** Turns "example.com" into a link a browser may follow (http, https or mailto only), or null. */
   const cleanUrl = (text: string): string | null => {
     const trimmed = text.trim();
@@ -1002,6 +1069,8 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
         }
         onStyle={applyStyle}
         onValidation={() => setValidating(true)}
+        onPerson={() => setMetaDialog("person")}
+        onTagPill={() => setMetaDialog("tag")}
         onConditional={() => setFormatting(true)}
         filtered={!!store.tabs[tab].layout.filter}
         onFilter={() => setFiltering(true)}
@@ -1089,6 +1158,8 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           </button>
         )}
       </div>
+      <PersonDialog open={metaDialog === "person"} onClose={() => setMetaDialog(null)} onPick={applyPerson} people={peopleChoices} />
+      <TagDialog open={metaDialog === "tag"} onClose={() => setMetaDialog(null)} onPick={applyTag} />
       {sortDialog && range && active && (
         <BigSortDialog
           firstCol={range.c1}

@@ -113,6 +113,8 @@ export function BigSheetToolbar({
   onLink,
   onComment,
   onValidation,
+  onPerson,
+  onTagPill,
   onConditional,
   filtered,
   onFilter,
@@ -141,6 +143,8 @@ export function BigSheetToolbar({
   onLink: () => void;
   onComment: () => void;
   onValidation: () => void;
+  onPerson: () => void;
+  onTagPill: () => void;
   onConditional: () => void;
   /** Is a filter on? */
   filtered: boolean;
@@ -161,10 +165,10 @@ export function BigSheetToolbar({
   const toggle = (key: "bold" | "italic" | "strike" | "underline") => onStyle({ [key]: !style[key] });
   return (
     <div className="big-toolbar" role="toolbar">
-      <Button title="Tag a person" disabled>
+      <Button title="Tag a person" disabled={off} onClick={onPerson}>
         <UserRound size={16} />
       </Button>
-      <Button title="Add a tag pill" disabled>
+      <Button title="Add a tag pill" disabled={off} onClick={onTagPill}>
         <Tag size={16} />
       </Button>
       <Divider />

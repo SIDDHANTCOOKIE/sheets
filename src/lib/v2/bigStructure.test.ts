@@ -552,3 +552,17 @@ describe("filtering by colour", () => {
     expect(rowsToHideByColor(scan, rows, true, "background", NO_COLOR)).not.toContain(4); // rows with no fill stay
   }, 120_000);
 });
+
+describe("person tags and tag pills", () => {
+  it("keep their data through save and reload", async () => {
+    const { store, reopen } = await open("struct-pills");
+    await store.load(0, 0);
+    const person = { pubkey: "a".repeat(64), npub: "npub1xyz", name: "Ada", picture: "https://x.test/a.png" };
+    await store.edit(0, 2, 1, 2, 1, () => ({ value: "Ada", person }));
+    await store.edit(0, 3, 1, 3, 1, () => ({ value: "Urgent", tag: "Urgent" }));
+    const again = await reopen();
+    await again.load(0, 0);
+    expect(again.cell(0, 2, 1)).toMatchObject({ value: "Ada", person });
+    expect(again.cell(0, 3, 1)).toMatchObject({ value: "Urgent", tag: "Urgent" });
+  }, 120_000);
+});
