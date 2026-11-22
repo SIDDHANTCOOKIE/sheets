@@ -94,6 +94,8 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   const [painting, setPainting] = useState<WorkbookCell["style"] | null>(null);
   const [editing, setEditing] = useState<{ row: number; col: number; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
+  /** Right-click menu: where it is on the page. */
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   /** Progress of a formula that has to read several chunks, e.g. =SUM(A:A). */
   const [calculating, setCalculating] = useState<string | null>(null);
   const hostRef = useRef<HTMLDivElement>(null);
@@ -217,6 +219,7 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
         setEditing({ row: cell.row, col: cell.col, text: initial });
       },
       onClear: (next) => clearArea(next.ranges[next.ranges.length - 1]),
+      onContextMenu: (info) => setMenu({ x: info.x, y: info.y }),
       onResize: (kind, index, size) => {
         // Resizing in a read-only sheet only lasts until the page is closed.
         if (!live.current.canEdit) return;
@@ -345,6 +348,37 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
     }
   };
   const mergedHere = !!range && !!store.tabs[tab]?.layout.merges?.some((m) => m.r <= range.r2 && m.r + m.rs - 1 >= range.r1 && m.c <= range.c2 && m.c + m.cs - 1 >= range.c1);
+
+  /** Hides or shows the rows/columns of the selection (showing also reveals the hidden ones just beside it). */
+  const setHidden = (axis: "rows" | "columns", hide: boolean) => {
+    if (!canEdit || !range) return;
+    const key = axis === "rows" ? "hiddenRows" : "hiddenColumns";
+    const from = axis === "rows" ? range.r1 : range.c1;
+    const to = axis === "rows" ? range.r2 : range.c2;
+    const count = axis === "rows" ? store.tabs[tab].rows : store.tabs[tab].cols;
+    const current = store.tabs[tab].layout[key] ?? [];
+    let next: number[];
+    if (hide) {
+      if (to - from + 1 > 200_000) return toast("That is too many to hide at once.", "error");
+      const set = new Set(current);
+      for (let i = from; i <= to; i++) set.add(i);
+      if (set.size >= count) return toast("Can't hide every " + (axis === "rows" ? "row" : "column") + ".", "error");
+      next = [...set].sort((a, b) => a - b);
+    } else {
+      next = current.filter((i) => i < from - 1 || i > to + 1);
+    }
+    store
+      .setLayout(tab, { [key]: next.length > 0 ? next : undefined })
+      .then(() => gridRef.current && applyLayout(gridRef.current, store, tab))
+      .catch(() => {});
+  };
+  const hiddenNear = (axis: "rows" | "columns") => {
+    if (!range) return false;
+    const list = store.tabs[tab]?.layout[axis === "rows" ? "hiddenRows" : "hiddenColumns"] ?? [];
+    const from = axis === "rows" ? range.r1 : range.c1;
+    const to = axis === "rows" ? range.r2 : range.c2;
+    return list.some((i) => i >= from - 1 && i <= to + 1);
+  };
 
   const frozen = store.tabs[tab]?.layout.frozen ?? { rows: 0, columns: 0 };
   const freezeOptions = [
@@ -576,6 +610,34 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           />
         )}
       </div>
+      {menu && range && (
+        <>
+          <div className="big-menu-backdrop" onPointerDown={() => setMenu(null)} onContextMenu={(event) => (event.preventDefault(), setMenu(null))} />
+          <div className="big-menu" style={{ top: menu.y, left: menu.x }} role="menu">
+            {(
+              [
+                [`Hide row${range.r2 > range.r1 ? "s" : ""} ${range.r1 + 1}${range.r2 > range.r1 ? "–" + (range.r2 + 1) : ""}`, () => setHidden("rows", true), true],
+                [`Hide column${range.c2 > range.c1 ? "s" : ""} ${columnName(range.c1)}${range.c2 > range.c1 ? "–" + columnName(range.c2) : ""}`, () => setHidden("columns", true), true],
+                ["Show hidden rows here", () => setHidden("rows", false), hiddenNear("rows")],
+                ["Show hidden columns here", () => setHidden("columns", false), hiddenNear("columns")],
+              ] as [string, () => void, boolean][]
+            ).map(([label, run, enabled]) => (
+              <button
+                key={label}
+                type="button"
+                role="menuitem"
+                disabled={!canEdit || !enabled}
+                onClick={() => {
+                  setMenu(null);
+                  run();
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
       <div className="big-sheet-tabs">
         {store.tabs.map((item, index) => (
           <button key={item.name + index} type="button" className={cx("big-sheet-tab", index === tab && "is-active")} onClick={() => switchTab(index)}>

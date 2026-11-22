@@ -3768,3 +3768,9 @@ pre {
 .sheet-card-stats > span + span::before { content: "·"; margin-right: 6px; opacity: 0.6; }
 .big-tool.is-select { gap: 2px; }
 .big-tool.is-select .big-tool-select { width: 118px; border: 0; padding: 0 2px; cursor: pointer; }
+
+.big-menu-backdrop { position: fixed; inset: 0; z-index: 30; }
+.big-menu { position: fixed; z-index: 31; min-width: 200px; padding: 4px; border-radius: 8px; background: var(--surface, #fff); color: inherit; border: 1px solid rgba(128, 128, 128, 0.35); box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25); display: flex; flex-direction: column; }
+.big-menu button { text-align: left; padding: 7px 10px; border: 0; border-radius: 5px; background: transparent; color: inherit; font: inherit; font-size: 13px; cursor: pointer; }
+.big-menu button:hover:not(:disabled) { background: rgba(128, 128, 128, 0.2); }
+.big-menu button:disabled { opacity: 0.4; cursor: default; }

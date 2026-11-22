@@ -99,6 +99,8 @@ export interface GridOptions {
   /** Cells to look at for Ctrl+arrow (does the cell hold anything?). */
   hasData?(row: number, col: number): boolean;
   onResize?(kind: "row" | "col", index: number, size: number): void;
+  /** Right-click: where (page coordinates) and on which row/column or header. The selection has already been adjusted. */
+  onContextMenu?(info: { x: number; y: number; row: number; col: number; onRowHead: boolean; onColHead: boolean }): void;
 }
 
 export function columnName(index: number): string {
@@ -178,6 +180,7 @@ export class Grid {
     this.scroller.addEventListener("pointermove", this.onPointerMove);
     this.scroller.addEventListener("pointerup", this.onPointerUp);
     this.scroller.addEventListener("dblclick", this.onDoubleClick);
+    this.scroller.addEventListener("contextmenu", this.onContextMenu);
     this.root.addEventListener("keydown", this.onKeyDown);
     // Firefox sends clipboard events to the page, not to the focused element, so listen on the document.
     document.addEventListener("copy", this.onCopy);
@@ -762,6 +765,29 @@ export class Grid {
       const size = drag.axis === "col" ? this.cols.size(drag.index) : this.rows.size(drag.index);
       this.options.onResize?.(drag.axis === "col" ? "col" : "row", drag.index, size);
     }
+  };
+
+  private onContextMenu = (event: MouseEvent): void => {
+    if (!this.options.onContextMenu) return;
+    const hit = this.hit(event.clientX, event.clientY);
+    if (hit.px >= this.width || hit.py >= this.height) return;
+    event.preventDefault();
+    this.focus();
+    const bounds = { rows: this.rows, cols: this.cols };
+    const inside = this.selection?.ranges.some((g) => {
+      if (hit.onRowHead && hit.onColHead) return false;
+      if (hit.onColHead) return hit.col >= g.c1 && hit.col <= g.c2 && g.r1 === 0 && g.r2 >= this.rows.length - 1;
+      if (hit.onRowHead) return hit.row >= g.r1 && hit.row <= g.r2 && g.c1 === 0 && g.c2 >= this.cols.length - 1;
+      return hit.row >= g.r1 && hit.row <= g.r2 && hit.col >= g.c1 && hit.col <= g.c2;
+    });
+    // Right-clicking outside the selection selects what was clicked, like other spreadsheets.
+    if (!inside) {
+      if (hit.onRowHead && hit.onColHead) this.select(selectAll(bounds), false);
+      else if (hit.onColHead) this.select(wholeCol(bounds, hit.col), false);
+      else if (hit.onRowHead) this.select(wholeRow(bounds, hit.row), false);
+      else this.select(single({ row: hit.row, col: hit.col }), false);
+    }
+    this.options.onContextMenu({ x: event.clientX, y: event.clientY, row: hit.row, col: hit.col, onRowHead: hit.onRowHead, onColHead: hit.onColHead });
   };
 
   private onDoubleClick = (event: MouseEvent): void => {
