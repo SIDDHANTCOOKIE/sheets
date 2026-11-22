@@ -106,6 +106,11 @@ export interface GridOptions {
   /** Cells to look at for Ctrl+arrow (does the cell hold anything?). */
   hasData?(row: number, col: number): boolean;
   onResize?(kind: "row" | "col", index: number, size: number): void;
+  /**
+   * A click on a cell while a formula is being typed. Return true when it was used (to insert the
+   * cell's address): the grid then leaves the selection and focus alone.
+   */
+  onReference?(cell: Cell): boolean;
   /** Ctrl+wheel or Ctrl +/-/0 changed the zoom (1 = 100%). */
   onZoom?(zoom: number): void;
   /** Right-click: where (page coordinates) and on which row/column or header. The selection has already been adjusted. */
@@ -793,6 +798,10 @@ export class Grid {
     const hit = this.hit(event.clientX, event.clientY);
     // The scrollbars sit inside the scroller; ignore presses on them.
     if (hit.px >= this.width || hit.py >= this.height) return;
+    if (!hit.onRowHead && !hit.onColHead && this.options.onReference?.({ row: hit.row, col: hit.col })) {
+      event.preventDefault();
+      return;
+    }
     this.focus();
     const mode = event.shiftKey ? "extend" : event.ctrlKey || event.metaKey ? "add" : "replace";
     const bounds = { rows: this.rows, cols: this.cols };

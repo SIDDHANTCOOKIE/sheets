@@ -61,7 +61,7 @@
       "450 FortuneSheet functions": "partial",
       "formula bar with token colours": "todo",
       "autocomplete and argument help": "partial",
-      "click/drag to insert references": "todo",
+      "click/drag to insert references": "partial",
       "recalculate formulas from the file on open": "todo",
       "volatile functions (NOW, RAND...)": "todo",
       "manual calculation mode": "todo"

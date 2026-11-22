@@ -253,6 +253,13 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
         setEditing({ row: cell.row, col: cell.col, text: initial });
       },
       onClear: (next) => clearArea(next.ranges[next.ranges.length - 1]),
+      onReference: (cell) => {
+        // While a formula waits for an operand ("=", "=A1+", "=SUM("), a click inserts that cell's address.
+        const current = live.current.editing;
+        if (!current || !/^=(?:.*[-+*/^&(,<>=:;])?$/.test(current.text)) return false;
+        setEditing({ ...current, text: `${current.text}${columnName(cell.col)}${cell.row + 1}` });
+        return true;
+      },
       onZoom: (zoom) => {
         // Zoom is a view setting: it is remembered with the sheet when it can be edited.
         setVersion((n) => n + 1);
