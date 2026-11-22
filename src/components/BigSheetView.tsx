@@ -34,6 +34,19 @@ function shown(cell: WorkbookCell | null | undefined): string {
   return cell ? cellDisplay(cell) : "";
 }
 
+/** "B7" or "A1:C5" as a range (0-based), or null when it is not a cell reference. */
+function parseReference(text: string): { r1: number; c1: number; r2: number; c2: number } | null {
+  const match = /^\$?([A-Za-z]{1,3})\$?(\d+)(?::\$?([A-Za-z]{1,3})\$?(\d+))?$/.exec(text.trim());
+  if (!match) return null;
+  const col = (letters: string) => [...letters.toUpperCase()].reduce((n, ch) => n * 26 + ch.charCodeAt(0) - 64, 0) - 1;
+  const r1 = Number(match[2]) - 1;
+  const c1 = col(match[1]);
+  const r2 = match[4] ? Number(match[4]) - 1 : r1;
+  const c2 = match[3] ? col(match[3]) : c1;
+  if (r1 < 0 || r2 < 0) return null;
+  return { r1: Math.min(r1, r2), c1: Math.min(c1, c2), r2: Math.max(r1, r2), c2: Math.max(c1, c2) };
+}
+
 /** A cell after a style change: the cached display text is dropped so the new number format shows. */
 function restyle(cell: WorkbookCell | undefined, patch: StylePatch): WorkbookCell {
   const { display: _display, ...rest } = cell ?? {};
@@ -97,6 +110,8 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   const [painting, setPainting] = useState<WorkbookCell["style"] | null>(null);
   const [editing, setEditing] = useState<{ row: number; col: number; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
+  /** What is typed in the name box (null: show the selection). */
+  const [nameDraft, setNameDraft] = useState<string | null>(null);
   /** The find bar (Ctrl+F), with the replace row when opened by Ctrl+H. */
   const [finding, setFinding] = useState<{ replace: boolean } | null>(null);
   /** Right-click menu: where it is on the page. */
@@ -671,7 +686,33 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
         onDecimals={(delta) => editRange((cell) => restyle(cell, { numberFormat: shiftDecimals(cell?.style?.numberFormat, delta) }))}
       />
       <div className="big-sheet-bar">
-        <span className="big-sheet-ref">{selectionLabel()}</span>
+        <input
+          className="big-sheet-ref"
+          aria-label="Go to cell"
+          value={nameDraft ?? selectionLabel()}
+          onFocus={(event) => {
+            setNameDraft(selectionLabel());
+            event.target.select();
+          }}
+          onChange={(event) => setNameDraft(event.target.value)}
+          onBlur={() => setNameDraft(null)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              setNameDraft(null);
+              gridRef.current?.focus();
+            } else if (event.key === "Enter") {
+              event.preventDefault();
+              const target = parseReference(nameDraft ?? "");
+              if (!target) return toast("Type a cell like B7 or a range like A1:C5.", "error");
+              const r1 = Math.min(target.r1, rows - 1);
+              const c1 = Math.min(target.c1, info.cols - 1);
+              const area = { r1, c1, r2: Math.min(target.r2, rows - 1), c2: Math.min(target.c2, info.cols - 1) };
+              gridRef.current?.select({ ranges: [area], active: { row: r1, col: c1 }, anchor: { row: r1, col: c1 } });
+              setNameDraft(null);
+              gridRef.current?.focus();
+            }
+          }}
+        />
         <span className="big-sheet-fx">fx</span>
         <span className="big-sheet-formula">
           {selectedCell?.formula ? `=${selectedCell.formula.replace(/^=/, "")}` : shown(selectedCell)}
