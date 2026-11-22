@@ -120,6 +120,9 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
   const [editing, setEditing] = useState<{ row: number; col: number; text: string } | null>(null);
   const [saving, setSaving] = useState(false);
   const [validating, setValidating] = useState(false);
+  /** Function names for formula autocomplete (loaded the first time a formula is typed). */
+  const [functionList, setFunctionList] = useState<string[] | null>(null);
+  const [suggestAt, setSuggestAt] = useState(0);
   const [formatting, setFormatting] = useState(false);
   /** What is typed in the name box (null: show the selection). */
   const [nameDraft, setNameDraft] = useState<string | null>(null);
@@ -708,6 +711,22 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
     );
   }
 
+  /** Functions that start like the word being typed after "=" (or after an operator or bracket). */
+  const suggestions = (() => {
+    if (!editing || !functionList || !editing.text.startsWith("=")) return [] as string[];
+    const word = /(?:^=|[-+*/^&(,<>=:;\s])([A-Za-z][A-Za-z0-9_.]*)$/.exec(editing.text)?.[1];
+    if (!word) return [];
+    const upper = word.toUpperCase();
+    const found = functionList.filter((name) => name.startsWith(upper) && name !== upper);
+    return found.slice(0, 8);
+  })();
+  /** Replaces the word being typed with the chosen function and an opening bracket. */
+  const acceptSuggestion = (name: string) => {
+    if (!editing) return;
+    setEditing({ ...editing, text: editing.text.replace(/[A-Za-z][A-Za-z0-9_.]*$/, `${name}(`) });
+    setSuggestAt(0);
+  };
+
   /** Count / sum / average of the numbers in the selection (only the parts already loaded, up to 50,000 cells). */
   const totals = (() => {
     if (!range || (range.r1 === range.r2 && range.c1 === range.c2)) return "";
@@ -911,6 +930,24 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
       )}
       <div className="big-sheet-scroll big-sheet-canvas">
         <div ref={hostRef} className="big-sheet-host" />
+        {editing && editRect && suggestions.length > 0 && (
+          <ul className="big-suggest" style={{ top: editRect.y + editRect.height, left: editRect.x }} role="listbox">
+            {suggestions.map((name, index) => (
+              <li
+                key={name}
+                role="option"
+                aria-selected={index === suggestAt}
+                className={index === suggestAt ? "is-active" : undefined}
+                onPointerDown={(event) => {
+                  event.preventDefault(); // keep the editor focused
+                  acceptSuggestion(name);
+                }}
+              >
+                {name}
+              </li>
+            ))}
+          </ul>
+        )}
         {editing && (
           <datalist id="big-validation-options">
             {(store.cell(tab, editing.row, editing.col)?.validation?.options ?? []).map((option) => (
@@ -925,12 +962,30 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
             autoFocus
             value={editing.text}
             list={store.cell(tab, editing.row, editing.col)?.validation?.type === "list" ? "big-validation-options" : undefined}
-            onChange={(event) => setEditing({ ...editing, text: event.target.value })}
+            onChange={(event) => {
+              setEditing({ ...editing, text: event.target.value });
+              setSuggestAt(0);
+              if (event.target.value.startsWith("=") && !functionList) {
+                void import("@formstr/sheets-formula").then((engine) => setFunctionList(engine.functionNames()));
+              }
+            }}
             onBlur={() => {
               if (cancelled.current) cancelled.current = false;
               else void commit("none");
             }}
             onKeyDown={(event) => {
+              if (suggestions.length > 0) {
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setSuggestAt((at) => (at + (event.key === "ArrowDown" ? 1 : suggestions.length - 1)) % suggestions.length);
+                  return;
+                }
+                if (event.key === "Tab" || event.key === "Enter") {
+                  event.preventDefault();
+                  acceptSuggestion(suggestions[Math.min(suggestAt, suggestions.length - 1)]);
+                  return;
+                }
+              }
               if (event.key === "Enter") {
                 event.preventDefault();
                 void commit("down");

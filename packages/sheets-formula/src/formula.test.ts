@@ -299,3 +299,14 @@ describe("function coverage", () => {
     expect(names.filter((name) => !isKnownFunction(name))).toEqual([]);
   });
 });
+
+describe("functionNames", () => {
+  it("lists what the engine can evaluate, sorted, with dotted names", async () => {
+    const { functionNames, isKnownFunction } = await import("./index");
+    const names = functionNames();
+    expect(names.length).toBeGreaterThan(300);
+    for (const name of ["SUM", "VLOOKUP", "IF", "IFERROR", "NORM.DIST", "SUMIFS"]) expect(names).toContain(name);
+    expect([...names].sort()).toEqual(names);
+    expect(names.every((name) => isKnownFunction(name))).toBe(true);
+  });
+});
