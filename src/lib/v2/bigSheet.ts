@@ -912,6 +912,12 @@ export class BigSheetStore {
     };
     Object.assign(this.root, root);
     this.tabRoots = root.tabs.map((tab) => ({ ...tab }));
+    this.markSaved();
+    return root;
+  }
+
+  /** Everything now counts as saved (after `save`, or after an in-memory store was written out as a document). */
+  markSaved(): void {
     this.metaDirty = false;
     this.dirty.clear();
     // Structural steps describe the state from before this save; once it is saved they (and the steps below them) cannot be undone.
@@ -921,7 +927,6 @@ export class BigSheetStore {
     });
     if (last >= 0) this.undoStack.splice(0, last + 1);
     this.emit();
-    return root;
   }
 }
 

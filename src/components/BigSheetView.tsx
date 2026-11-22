@@ -24,7 +24,7 @@ import {
 import type { SheetRootV2 } from "../lib/v2/root";
 import { uploadProgress } from "../lib/v2/progress";
 import type { LibraryEntry } from "../lib/types";
-import type { WorkbookCell } from "../lib/workbook";
+import type { WorkbookCell, WorkbookDocument } from "../lib/workbook";
 import { cellDisplay } from "../lib/workbook/format";
 import { BigFindBar } from "./BigFindBar";
 import { exportBigSheet } from "../lib/v2/bigExport";
@@ -148,14 +148,15 @@ function tabData(store: BigSheetStore, tab: number): GridData {
   };
 }
 
-export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: SheetRootV2 }) {
+export function BigSheetView({ entry, root, document }: { entry: LibraryEntry; root?: SheetRootV2; document?: WorkbookDocument }) {
   const library = useLibrary();
   const auth = useAuth();
   const profiles = useProfiles();
   const { toast } = useToast();
   // Created once per root: recreating it (e.g. when the server list loads) would drop unsaved edits.
   const serversRef = useRef(library.blossomServers);
-  const store = useMemo(() => new BigSheetStore(root, serversRef.current), [root]);
+  // A small sheet comes as a document and is held in memory; a big one comes as a root and is read a chunk at a time.
+  const store = useMemo(() => (document ? BigSheetStore.fromDocument(document) : new BigSheetStore(root as SheetRootV2, serversRef.current)), [root, document]);
   const [ready, setReady] = useState(false);
   const [openError, setOpenError] = useState("");
   const [tab, setTab] = useState(0);
@@ -881,6 +882,12 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
     if (store.dirtyCount === 0 || saving) return;
     setSaving(true);
     try {
+      if (store.inMemory) {
+        await library.saveDocument(entry, await store.toDocument());
+        store.markSaved();
+        toast("Saved.", "success");
+        return;
+      }
       const target = library.bigSheetUpload();
       if (!target.signer || target.servers.length === 0) throw new Error("Sign in and tick a storage server to save.");
       const next = await store.save({

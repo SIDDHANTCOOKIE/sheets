@@ -25,7 +25,7 @@ import {
   Trash2,
   UserRound,
 } from "lucide-react";
-import { AUTOSAVE_ENABLED } from "../lib/constants";
+import { AUTOSAVE_ENABLED, newGridRequested } from "../lib/constants";
 import { OPEN_MAX_CELLS, SheetTooLargeToOpenError, type SheetRootV2, type SheetSize } from "../lib/v2/root";
 import { BigSheetView } from "./BigSheetView";
 import { Avatar } from "./Avatar";
@@ -1083,6 +1083,8 @@ export function Editor() {
             </button>
           </div>
         </div>
+      ) : sheetDocument && entry && newGridRequested() ? (
+        <BigSheetView entry={entry} document={sheetDocument} />
       ) : loading || !sheetDocument ? (
         <div className="editor-loading editor-loading-inline">
           <Loader2 size={22} className="spin" />
