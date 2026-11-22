@@ -310,3 +310,30 @@ describe("functionNames", () => {
     expect(names.every((name) => isKnownFunction(name))).toBe(true);
   });
 });
+
+describe("ADDRESS, HYPERLINK, LENB, FINDB and the Google conversions", () => {
+  const run = (formula: string) => calculate(formula, { sheet: "Sheet1", getCell: () => undefined });
+  it("builds addresses in every style", () => {
+    expect(run("ADDRESS(2,3)")).toBe("$C$2");
+    expect(run("ADDRESS(2,3,4)")).toBe("C2");
+    expect(run("ADDRESS(2,3,2)")).toBe("C$2");
+    expect(run("ADDRESS(2,3,3)")).toBe("$C2");
+    expect(run("ADDRESS(2,28,4)")).toBe("AB2");
+    expect(run("ADDRESS(2,3,1,FALSE)")).toBe("R2C3");
+    expect(run('ADDRESS(1,1,1,TRUE,"Data")')).toBe("Data!$A$1");
+    expect(run('ADDRESS(1,1,4,TRUE,"My Sheet")')).toBe("'My Sheet'!A1");
+    expect(run("ADDRESS(0,1)")).toBeInstanceOf(FormulaError);
+  });
+  it("covers the small helpers", () => {
+    expect(run('HYPERLINK("https://a.test","Go")')).toBe("Go");
+    expect(run('HYPERLINK("https://a.test")')).toBe("https://a.test");
+    expect(run('LENB("abc")')).toBe(3);
+    expect(run('FINDB("c","abcabc",4)')).toBe(6);
+    expect(run('FINDB("x","abc")')).toBeInstanceOf(FormulaError);
+    expect(run("TO_TEXT(12)")).toBe("12");
+    expect(run("TO_PERCENT(0.5)")).toBe(0.5);
+    expect(run("UNARY_PERCENT(50)")).toBe(0.5);
+    expect(run("TO_DATE(45000.7)")).toBe(45000);
+    expect(run("TO_PURE_NUMBER(7)")).toBe(7);
+  });
+});
