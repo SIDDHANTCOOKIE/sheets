@@ -1850,8 +1850,16 @@ pre {
   font-size: 10px;
 }
 
-.sheet-card-meta > span:nth-child(2) {
+.sheet-card-meta > .sheet-card-stats {
   margin-left: auto;
+}
+.sheet-card-size {
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
 }
 
 .sheet-card-new {
