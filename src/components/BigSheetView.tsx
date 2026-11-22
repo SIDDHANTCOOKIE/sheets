@@ -944,7 +944,17 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
     gridRef.current?.focus();
   };
 
-  const undo = () => void refresh(store.undo().map(pointRect));
+  const undo = () => {
+    const cells = store.undo();
+    if (store.structuralUndo) {
+      // Rows, columns or tabs came back: show them again and look for formulas afresh.
+      const visible = visibleTabs();
+      const next = Math.min(tab, store.tabs.length - 1);
+      showTabs(visible.includes(next) ? next : (visible[0] ?? 0), true);
+      return;
+    }
+    void refresh(cells.map(pointRect));
+  };
   const redo = () => void refresh(store.redo().map(pointRect));
 
   const applyStyle = (patch: StylePatch) => editRange((cell) => restyle(cell, patch));

@@ -41,6 +41,20 @@ export interface CellAddress {
   col: number;
 }
 
+/** An undo step: the cells a change touched, or a function that puts back a whole earlier state (insert/delete, tabs). */
+type UndoStep = Change[] | { restore: () => void };
+
+/** Structural steps keep a copy of the state before them, so only the latest few can be undone. */
+const MAX_STRUCTURAL_UNDO = 5;
+
+interface Snapshot {
+  tabs: { tab: BigTab; name: string; chunks: ChunkEntry[]; indexed: boolean; rows: number; cols: number; colIds: string[]; layout: TabLayout }[];
+  tabRoots: RootTab[];
+  bodies: { key: string; body: ChunkBody; cells: Record<string, WorkbookCell>; rows?: RowRun[]; layout: Record<string, unknown> }[];
+  dirty: Set<string>;
+  metaDirty: boolean;
+}
+
 interface Change {
   tab: number;
   row: number;
@@ -90,7 +104,9 @@ export class BigSheetStore {
   private cache = new Map<string, ChunkBody>();
   private loading = new Map<string, Promise<ChunkBody>>();
   private dirty = new Set<string>();
-  private undoStack: Change[][] = [];
+  private undoStack: UndoStep[] = [];
+  /** Was the last undo() a structural one (rows, columns, tabs)? Then the caller has to rebuild what it shows. */
+  structuralUndo = false;
   private redoStack: Change[][] = [];
   private listeners = new Set<() => void>();
   /** Called each time a chunk finishes loading (the formula index learns its formulas here). */
@@ -113,7 +129,8 @@ export class BigSheetStore {
     this.tabs = [];
     this.tabRoots = this.root.tabs.map((tab) => ({ ...tab }));
     for (const tab of this.root.tabs) {
-      const chunks = (await resolveChunks(tab, this.root.servers, this.fetchBody)) ?? [];
+      // Our own copies: the store changes chunk entries as rows move, and the root must stay as it was saved.
+      const chunks = ((await resolveChunks(tab, this.root.servers, this.fetchBody)) ?? []).map((entry) => ({ ...entry }));
       const last = chunks[chunks.length - 1];
       this.tabs.push({
         name: tab.name,
@@ -308,8 +325,17 @@ export class BigSheetStore {
 
   /** Undoes the last edit; returns the cells it changed (so formulas that read them can be refreshed). */
   undo(): CellAddress[] {
+    this.structuralUndo = false;
     const step = this.undoStack.pop();
     if (!step) return [];
+    if (!Array.isArray(step)) {
+      // Insert, delete or a tab change: put back the state from before it. (It cannot be redone.)
+      step.restore();
+      this.redoStack = [];
+      this.structuralUndo = true;
+      this.emit();
+      return [];
+    }
     this.apply(step, "before");
     this.redoStack.push(step);
     return step.map(({ tab, row, col }) => ({ tab, row, col }));
@@ -358,12 +384,76 @@ export class BigSheetStore {
     this.emit();
   }
 
+  // --- undo for structural changes --------------------------------------------------------
+
+  private takeSnapshot(): Snapshot {
+    const pick = (body: ChunkBody) => {
+      const layout: Record<string, unknown> = {};
+      for (const key of LAYOUT_KEYS) if (body[key] !== undefined) layout[key] = structuredClone(body[key]);
+      return layout;
+    };
+    return {
+      tabs: this.tabs.map((tab) => ({
+        tab,
+        name: tab.name,
+        chunks: [...tab.chunks],
+        indexed: tab.indexed,
+        rows: tab.rows,
+        cols: tab.cols,
+        colIds: [...tab.colIds],
+        layout: structuredClone(tab.layout),
+      })),
+      tabRoots: this.tabRoots.map((root) => ({ ...root })),
+      // Cells are copied one level deep: later edits replace entries in the live object, not in the copy.
+      bodies: [...this.cache].map(([key, body]) => ({ key, body, cells: { ...body.cells }, rows: body.rows ? [...body.rows] : undefined, layout: pick(body) })),
+      dirty: new Set(this.dirty),
+      metaDirty: this.metaDirty,
+    };
+  }
+
+  private restoreSnapshot(snap: Snapshot): void {
+    this.tabs = snap.tabs.map(({ tab, name, chunks, indexed, rows, cols, colIds, layout }) => {
+      Object.assign(tab, { name, chunks, indexed, rows, cols, colIds, layout });
+      return tab;
+    });
+    this.tabRoots = snap.tabRoots;
+    // Chunks read since are dropped (they are read again as they were saved); the ones that were open come back as they were.
+    const cache = new Map<string, ChunkBody>();
+    for (const { key, body, cells, rows, layout } of snap.bodies) {
+      body.cells = cells;
+      body.rows = rows;
+      for (const name of LAYOUT_KEYS) delete body[name];
+      Object.assign(body, layout);
+      cache.set(key, body);
+    }
+    this.cache = cache;
+    this.dirty = snap.dirty;
+    this.metaDirty = snap.metaDirty;
+    this.loading.clear();
+  }
+
+  /** Takes the state now; the returned function (call it once the change worked) makes the change undoable. */
+  private beginUndoableChange(): () => void {
+    const snap = this.takeSnapshot();
+    return () => {
+      this.undoStack.push({ restore: () => this.restoreSnapshot(snap) });
+      this.redoStack = [];
+      // Older steps are only valid together with the structural steps above them: dropping the oldest drops what is below it.
+      const at = () => this.undoStack.map((step, i) => (Array.isArray(step) ? -1 : i)).filter((i) => i >= 0);
+      let steps = at();
+      while (steps.length > MAX_STRUCTURAL_UNDO) {
+        this.undoStack.splice(0, steps[0] + 1);
+        steps = at();
+      }
+    };
+  }
+
   // --- inserting and deleting rows and columns ------------------------------------------------
 
   /**
    * Inserts or deletes rows or columns: moves the cells, the ids and the tab's saved look (sizes,
-   * merges, borders). Formulas are NOT rewritten here (see bigStructure.ts). Not undoable: the undo
-   * history is cleared because it names cells by position.
+   * merges, borders). Formulas are NOT rewritten here (see bigStructure.ts). Undoable (the last few
+   * such changes), but not redoable.
    */
   async applyEdit(tab: number, edit: StructEdit): Promise<void> {
     if (edit.count <= 0) return;
@@ -382,6 +472,7 @@ export class BigSheetStore {
     }
     // The first chunk carries the size and look, so it is always rewritten.
     await this.load(tab, 0);
+    const finish = this.beginUndoableChange();
     if (edit.axis === "row") await (edit.kind === "insert" ? this.insertRows(tab, edit) : this.deleteRows(tab, edit));
     else if (edit.kind === "insert") this.insertCols(tab, edit);
     else this.deleteCols(tab, edit);
@@ -394,8 +485,7 @@ export class BigSheetStore {
       else head[key] = value;
     }
     this.dirty.add(this.key(tab, 0));
-    this.undoStack = [];
-    this.redoStack = [];
+    finish();
     this.emit();
   }
 
@@ -511,11 +601,13 @@ export class BigSheetStore {
   }
 
   private changeTab(tab: number, patch: Partial<Pick<RootTab, "name" | "color" | "hidden">>): void {
+    const finish = this.beginUndoableChange();
     const next = { ...this.tabRoots[tab], ...patch };
     for (const key of Object.keys(next) as (keyof typeof next)[]) if (next[key] === undefined) delete next[key];
     this.tabRoots[tab] = next;
     if (patch.name !== undefined) this.tabs[tab].name = patch.name;
     this.metaDirty = true;
+    finish();
     this.emit();
   }
 
@@ -534,6 +626,7 @@ export class BigSheetStore {
 
   /** Adds an empty tab at the end and returns its index. It exists in memory until saved. */
   addTab(name: string): number {
+    const finish = this.beginUndoableChange();
     const index = this.tabs.length;
     const rows = 200;
     const cols = 26;
@@ -550,6 +643,7 @@ export class BigSheetStore {
     this.cache.set(this.key(index, 0), body);
     this.dirty.add(this.key(index, 0));
     this.metaDirty = true;
+    finish();
     this.emit();
     return index;
   }
@@ -562,6 +656,7 @@ export class BigSheetStore {
   duplicateTab(tab: number, name: string): number {
     const info = this.tabs[tab];
     if ([...this.dirty].some((key) => key.startsWith(`${tab}:`))) throw new Error("Save your changes first, then copy the tab.");
+    const finish = this.beginUndoableChange();
     const source = this.tabRoots[tab];
     const at = tab + 1;
     const copy: BigTab = {
@@ -587,16 +682,23 @@ export class BigSheetStore {
     this.tabs.push(copy);
     this.tabRoots.push(entry);
     order.splice(at, 0, this.tabs.length - 1);
-    this.remapTabs(order);
+    this.remapTabsRaw(order);
+    finish();
     return at;
   }
 
   /**
    * Reorders or drops tabs: `order` lists the old index of each tab that stays, in its new place.
-   * Loaded chunks follow their tab; the undo history is cleared (it names tabs by number).
+   * Loaded chunks follow their tab. Undoable (the last few structural changes), not redoable.
    */
   remapTabs(order: number[]): void {
     if (order.length === 0) throw new Error("A workbook needs at least one tab.");
+    const finish = this.beginUndoableChange();
+    this.remapTabsRaw(order);
+    finish();
+  }
+
+  private remapTabsRaw(order: number[]): void {
     const where = new Map(order.map((old, now) => [old, now]));
     const move = (map: Map<string, ChunkBody>) => {
       const next = new Map<string, ChunkBody>();
@@ -618,8 +720,6 @@ export class BigSheetStore {
     this.loading.clear();
     this.tabs = order.map((old) => this.tabs[old]);
     this.tabRoots = order.map((old, now) => ({ ...this.tabRoots[old], order: now }));
-    this.undoStack = [];
-    this.redoStack = [];
     this.metaDirty = true;
     this.emit();
   }
@@ -722,6 +822,12 @@ export class BigSheetStore {
     this.tabRoots = root.tabs.map((tab) => ({ ...tab }));
     this.metaDirty = false;
     this.dirty.clear();
+    // Structural steps describe the state from before this save; once it is saved they (and the steps below them) cannot be undone.
+    let last = -1;
+    this.undoStack.forEach((step, i) => {
+      if (!Array.isArray(step)) last = i;
+    });
+    if (last >= 0) this.undoStack.splice(0, last + 1);
     this.emit();
     return root;
   }

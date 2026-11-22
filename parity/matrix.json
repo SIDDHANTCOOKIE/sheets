@@ -77,7 +77,7 @@
     "Persistence and platform": {
       "open huge sheets (100 MB / 25M cells)": "done",
       "save and reload everything above": "done",
-      "undo history for structural edits": "todo",
+      "undo history for structural edits": "done",
       "xlsx import (streaming)": "done",
       "xlsx export (streaming)": "todo",
       "live collaboration": "todo",

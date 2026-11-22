@@ -566,3 +566,96 @@ describe("person tags and tag pills", () => {
     expect(again.cell(0, 3, 1)).toMatchObject({ value: "Urgent", tag: "Urgent" });
   }, 120_000);
 });
+
+describe("undo for insert, delete and tab changes", () => {
+  it("puts back rows after an insert and after a delete that drops whole chunks", async () => {
+    const { store, reopen } = await open("struct-undo-rows");
+    const before = await snapshot(store);
+    const chunks = store.tabs[0].chunks;
+    await store.applyEdit(0, { kind: "insert", axis: "row", index: chunks[1].rowStart + 4, count: 3 });
+    expect(store.canUndo).toBe(true);
+    store.undo();
+    expect(store.structuralUndo).toBe(true);
+    expect(store.tabs[0].rows).toBe(before.length);
+    expect(await snapshot(store)).toEqual(before);
+
+    // A delete across chunks (chunk 2 is dropped whole), then undo.
+    const from = chunks[1].rowStart + 3;
+    const to = chunks[3].rowStart + 4;
+    await store.applyEdit(0, { kind: "delete", axis: "row", index: from, count: to - from });
+    expect(store.tabs[0].rows).toBe(before.length - (to - from));
+    store.undo();
+    expect(store.tabs[0].rows).toBe(before.length);
+    expect(await snapshot(store)).toEqual(before);
+
+    // After undoing, saving and reading again gives the original sheet.
+    const again = await reopen();
+    expect(await snapshot(again)).toEqual(before);
+  }, 180_000);
+
+  it("puts back columns, formulas and layout, and older cell edits stay undoable in order", async () => {
+    const { store } = await open("struct-undo-cols");
+    await store.load(0, 0);
+    const index = new FormulaIndex();
+    await store.setCell(0, 5, 0, "7");
+    await store.edit(0, 6, 1, 6, 1, () => ({ formula: "A6*2", value: 14 }));
+    await index.set(store, 0, 6, 1, "A6*2");
+    await store.setLayout(0, { columnWidths: { 2: 99 } });
+    const before = await snapshot(store);
+    const layoutBefore = structuredClone(store.tabs[0].layout);
+
+    // A cell edit, then a structural change: undo goes back through both, in order.
+    await store.setCell(0, 5, 3, "edit");
+    await editStructure(store, index, 0, { kind: "insert", axis: "col", index: 0, count: 2 });
+    expect(store.cell(0, 6, 3)?.formula).toBe("C6*2"); // rewritten and moved
+    store.undo();
+    expect(store.structuralUndo).toBe(true);
+    expect(store.cell(0, 6, 1)?.formula).toBe("A6*2"); // formula text came back with its cell
+    expect(store.tabs[0].layout.columnWidths).toEqual(layoutBefore.columnWidths);
+    expect(store.cell(0, 5, 3)?.value).toBe("edit");
+    store.undo(); // the cell edit
+    expect(store.structuralUndo).toBe(false);
+    expect(await snapshot(store)).toEqual(before);
+  }, 180_000);
+
+  it("undoes added, renamed, recoloured and reordered tabs", async () => {
+    const { store } = await open("struct-undo-tabs", 2);
+    const names = store.tabs.map((t) => t.name);
+    store.renameTab(1, "Budget");
+    store.undo();
+    expect(store.tabs[1].name).toBe(names[1]);
+    store.setTabColor(0, "#ff0000");
+    store.undo();
+    expect(store.tabMeta(0).color).toBeUndefined();
+    store.addTab("Notes");
+    expect(store.tabs).toHaveLength(3);
+    store.undo();
+    expect(store.tabs.map((t) => t.name)).toEqual(names);
+    store.remapTabs([1, 0]);
+    store.undo();
+    expect(store.tabs.map((t) => t.name)).toEqual(names);
+    await store.load(1, 0);
+    expect(store.cell(1, 0, 0)).toBeDefined();
+    store.remapTabs([0]); // delete the second tab
+    expect(store.tabs).toHaveLength(1);
+    store.undo();
+    expect(store.tabs.map((t) => t.name)).toEqual(names);
+    await store.load(1, 0);
+    expect(store.cell(1, 0, 0)).toBeDefined(); // its data is still there
+  }, 180_000);
+
+  it("forgets structural steps once the sheet is saved, and keeps only the latest few", async () => {
+    const { store, reopen } = await open("struct-undo-save");
+    await store.applyEdit(0, { kind: "insert", axis: "row", index: 2, count: 1 });
+    const saved = await reopen();
+    expect(saved.canUndo).toBe(false);
+    for (let i = 0; i < 7; i++) await store.applyEdit(0, { kind: "insert", axis: "row", index: 1, count: 1 });
+    let undone = 0;
+    while (store.canUndo) {
+      store.undo();
+      undone++;
+    }
+    expect(undone).toBe(5);
+  }, 180_000);
+});
+
