@@ -1,7 +1,7 @@
 // Filter dialog for big sheets: pick the values of a column to show; other rows are hidden.
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { BigSheetStore } from "../lib/v2/bigSheet";
-import { BLANK, rowsToHide, scanColumn, type ColumnFilter, type ColumnScan } from "../lib/v2/bigFilter";
+import { BLANK, NO_COLOR, rowsToHide, rowsToHideByColor, scanColumn, type ColorKind, type ColumnFilter, type ColumnScan } from "../lib/v2/bigFilter";
 
 export function BigFilterDialog({
   store,
@@ -28,6 +28,9 @@ export function BigFilterDialog({
   const [header, setHeader] = useState(current?.header ?? true);
   const [search, setSearch] = useState("");
   const [checked, setChecked] = useState<Set<string> | null>(null);
+  /** Filter by the values of the cells, or by the fill / text colour. */
+  const [mode, setMode] = useState<"values" | ColorKind>("values");
+  const [pickedColor, setPickedColor] = useState<string | null>(null);
   const stop = useRef(false);
 
   useEffect(() => {
@@ -64,6 +67,12 @@ export function BigFilterDialog({
 
   const apply = () => {
     if (!scan || !checked) return;
+    if (mode !== "values") {
+      if (pickedColor === null) return setError("Pick a colour to keep.");
+      const hidden = rowsToHideByColor(scan, store.tabs[tab].rows, header, mode, pickedColor);
+      onApply({ col, header, hidden, summary: `has ${mode === "background" ? "fill" : "text colour"} ${pickedColor}` });
+      return;
+    }
     const keep = (text: string | null) => checked.has(text ?? BLANK);
     const hidden = rowsToHide(scan, store.tabs[tab].rows, header, keep);
     const everyListedChecked = scan.values.every((item) => checked.has(item.value));
@@ -95,6 +104,27 @@ export function BigFilterDialog({
             <label className="big-dialog-check">
               <input type="checkbox" checked={header} onChange={(event) => setHeader(event.target.checked)} /> The first row is a header (never hidden)
             </label>
+            <div className="big-dialog-row">
+              <select value={mode} onChange={(event) => (setMode(event.target.value as typeof mode), setPickedColor(null), setError(""))} aria-label="Filter by">
+                <option value="values">By value</option>
+                <option value="background">By fill colour</option>
+                <option value="font">By text colour</option>
+              </select>
+            </div>
+            {mode !== "values" && (
+              <div className="big-filter-list">
+                {scan.colorCounts[mode].map((item) => (
+                  <label key={item.value} className="big-filter-item">
+                    <input type="radio" name="big-filter-color" checked={pickedColor === item.value} onChange={() => setPickedColor(item.value)} />
+                    <span className="big-filter-swatch" style={{ background: item.value === NO_COLOR ? "transparent" : item.value }} />
+                    <span className="big-filter-value">{item.value}</span>
+                    <span className="big-filter-count">{item.count.toLocaleString()}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+            {mode === "values" && (
+              <>
             <input placeholder="Search values" value={search} onChange={(event) => setSearch(event.target.value)} autoFocus />
             <div className="big-dialog-row">
               <button type="button" className="btn btn-sm" onClick={() => setChecked(new Set(scan.values.map((item) => item.value)))}>
@@ -124,6 +154,9 @@ export function BigFilterDialog({
               {listed.length === 0 && <p className="big-dialog-sub">No values match.</p>}
             </div>
             {scan.truncated && <p className="big-dialog-sub">Only the 5,000 most common values are listed.</p>}
+              </>
+            )}
+            {error && <p className="big-dialog-error">{error}</p>}
           </>
         )}
         <div className="big-dialog-actions">

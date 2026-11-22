@@ -18,7 +18,14 @@ export const BLANK = "(Blank)";
 export const MAX_FILTER_ROWS = 2_000_000;
 export const MAX_DISTINCT = 5_000;
 
+export type ColorKind = "background" | "font";
+export const NO_COLOR = "(none)";
+
 export interface ColumnScan {
+  /** Fill and text colour of cells that have one, by row. */
+  colors: { background: Map<number, string>; font: Map<number, string> };
+  /** The distinct colours of each kind with how many rows have them; NO_COLOR counts the rest. */
+  colorCounts: { background: { value: string; count: number }[]; font: { value: string; count: number }[] };
   /** Shown text of every non-empty cell, by row. */
   texts: Map<number, string>;
   /** Distinct texts (blank rows count as BLANK), most common first. */
@@ -38,6 +45,7 @@ export async function scanColumn(
   const info = store.tabs[tab];
   if (info.rows > MAX_FILTER_ROWS) throw new Error(`Filtering works up to ${MAX_FILTER_ROWS.toLocaleString()} rows.`);
   const texts = new Map<number, string>();
+  const colors = { background: new Map<number, string>(), font: new Map<number, string>() };
   for (let chunk = 0; chunk < info.chunks.length; chunk++) {
     if (stop?.()) return null;
     await store.load(tab, chunk);
@@ -46,6 +54,8 @@ export async function scanColumn(
       if (c !== col) continue;
       const text = cellDisplay(cell);
       if (text !== "") texts.set(row, text);
+      if (cell.style?.background) colors.background.set(row, cell.style.background.toLowerCase());
+      if (cell.style?.color) colors.font.set(row, cell.style.color.toLowerCase());
     }
     onProgress?.(chunk + 1, info.chunks.length);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -55,8 +65,17 @@ export async function scanColumn(
   const blanks = info.rows - texts.size;
   if (blanks > 0) counts.set(BLANK, blanks);
   const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], undefined, { numeric: true }));
+  const tally = (map: Map<number, string>) => {
+    const counts = new Map<string, number>();
+    for (const color of map.values()) counts.set(color, (counts.get(color) ?? 0) + 1);
+    const rest = info.rows - map.size;
+    if (rest > 0) counts.set(NO_COLOR, rest);
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 200).map(([value, count]) => ({ value, count }));
+  };
   return {
     texts,
+    colors,
+    colorCounts: { background: tally(colors.background), font: tally(colors.font) },
     values: sorted.slice(0, MAX_DISTINCT).map(([value, count]) => ({ value, count })),
     truncated: sorted.length > MAX_DISTINCT,
   };
@@ -66,5 +85,16 @@ export async function scanColumn(
 export function rowsToHide(scan: ColumnScan, rows: number, header: boolean, keep: (text: string | null) => boolean): number[] {
   const hidden: number[] = [];
   for (let row = header ? 1 : 0; row < rows; row++) if (!keep(scan.texts.get(row) ?? null)) hidden.push(row);
+  return hidden;
+}
+
+/** The rows (from the first data row on) whose fill or text colour is not `color` (NO_COLOR means "no colour set"). */
+export function rowsToHideByColor(scan: ColumnScan, rows: number, header: boolean, kind: ColorKind, color: string): number[] {
+  const hidden: number[] = [];
+  const map = scan.colors[kind];
+  for (let row = header ? 1 : 0; row < rows; row++) {
+    const has = map.get(row) ?? NO_COLOR;
+    if (has !== color) hidden.push(row);
+  }
   return hidden;
 }

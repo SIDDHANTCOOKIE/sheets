@@ -71,7 +71,7 @@
       "conditional formatting (rules, data bars, colour scales)": "done",
       "hyperlinks": "done",
       "comments": "done",
-      "filter by value / colour": "partial",
+      "filter by value / colour": "done",
       "images": "todo"
     },
     "Persistence and platform": {

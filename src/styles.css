@@ -3825,3 +3825,5 @@ pre {
 .big-sheet-calc { padding: 2px 8px; border-radius: 6px; border: 1px solid rgba(128, 128, 128, 0.4); background: transparent; color: inherit; font: inherit; font-size: 11px; cursor: pointer; white-space: nowrap; }
 .big-sheet-calc.is-stale { border-color: #f76b15; }
 .big-sheet-calc:disabled { opacity: 0.5; cursor: default; }
+
+.big-filter-swatch { width: 16px; height: 16px; border-radius: 4px; border: 1px solid rgba(128, 128, 128, 0.5); flex: none; }

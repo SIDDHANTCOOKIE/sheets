@@ -4,7 +4,7 @@ import { BigSheetStore } from "./bigSheet";
 import { calculateTyped, FormulaIndex, isVolatile, recalcVolatileInChunk, refreshDependents } from "./bigFormulas";
 import { editStructure, renameTabAndFormulas } from "./bigStructure";
 import { sortArea } from "./bigSort";
-import { BLANK, rowsToHide, scanColumn } from "./bigFilter";
+import { BLANK, NO_COLOR, rowsToHide, rowsToHideByColor, scanColumn } from "./bigFilter";
 import { copyBlock, dragFill, extendSeries, moveCells } from "./bigClipboard";
 import { editLayout } from "./layoutEdit";
 import { fakeBlossom, localSigner } from "./testUtils";
@@ -525,4 +525,30 @@ describe("copying a tab", () => {
     expect(again.cell(1, 3, 3)?.value).toBe("changed in the copy");
     expect(again.tabs[1].chunks.length).toBe(again.tabs[0].chunks.length);
   }, 180_000);
+});
+
+describe("filtering by colour", () => {
+  it("keeps the rows with the chosen fill or text colour", async () => {
+    const { store } = await open("struct-filter-color");
+    await store.load(0, 0);
+    await store.edit(0, 1, 9, 1, 9, () => ({ value: "a", style: { background: "#FF0000", color: "#0000ff" } }));
+    await store.edit(0, 2, 9, 2, 9, () => ({ value: "b", style: { background: "#ff0000" } }));
+    await store.edit(0, 3, 9, 3, 9, () => ({ value: "c", style: { background: "#00ff00" } }));
+    const scan = (await scanColumn(store, 0, 9))!;
+    const counts = Object.fromEntries(scan.colorCounts.background.map((c) => [c.value, c.count]));
+    expect(counts["#ff0000"]).toBe(2); // colours are compared ignoring case
+    expect(counts["#00ff00"]).toBe(1);
+    expect(counts[NO_COLOR]).toBe(store.tabs[0].rows - 3);
+    const rows = store.tabs[0].rows;
+    const redOnly = rowsToHideByColor(scan, rows, true, "background", "#ff0000");
+    expect(redOnly).not.toContain(0); // header
+    expect(redOnly).not.toContain(1);
+    expect(redOnly).not.toContain(2);
+    expect(redOnly).toContain(3);
+    expect(redOnly).toHaveLength(rows - 1 - 2);
+    const blueText = rowsToHideByColor(scan, rows, false, "font", "#0000ff");
+    expect(blueText).toHaveLength(rows - 1);
+    expect(blueText).not.toContain(1);
+    expect(rowsToHideByColor(scan, rows, true, "background", NO_COLOR)).not.toContain(4); // rows with no fill stay
+  }, 120_000);
 });
