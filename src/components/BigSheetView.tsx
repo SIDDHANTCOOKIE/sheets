@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { addBorder, columnName, Grid, type BorderType, type GridData, type Selection } from "@formstr/sheets-grid";
 import { AlertTriangle, Loader2, Save } from "lucide-react";
-import { BIG_SHEET_EDITING } from "../lib/constants";
+import { AUTOSAVE_ENABLED, BIG_SHEET_EDITING } from "../lib/constants";
 import { BigSheetStore } from "../lib/v2/bigSheet";
 import { sortArea } from "../lib/v2/bigSort";
 import { editStructure, renameTabAndFormulas } from "../lib/v2/bigStructure";
@@ -148,7 +148,18 @@ function tabData(store: BigSheetStore, tab: number): GridData {
   };
 }
 
-export function BigSheetView({ entry, root, document }: { entry: LibraryEntry; root?: SheetRootV2; document?: WorkbookDocument }) {
+export function BigSheetView({
+  entry,
+  root,
+  document,
+  onSaved,
+}: {
+  entry: LibraryEntry;
+  root?: SheetRootV2;
+  document?: WorkbookDocument;
+  /** A small sheet was saved as this document in this event (the editor needs it to tell its own saves from other people's). */
+  onSaved?: (document: WorkbookDocument, event: { id: string; created_at: number }) => void;
+}) {
   const library = useLibrary();
   const auth = useAuth();
   const profiles = useProfiles();
@@ -160,7 +171,7 @@ export function BigSheetView({ entry, root, document }: { entry: LibraryEntry; r
   const [ready, setReady] = useState(false);
   const [openError, setOpenError] = useState("");
   const [tab, setTab] = useState(0);
-  const [, setVersion] = useState(0);
+  const [version, setVersion] = useState(0);
   const [selection, setSelection] = useState<Selection | null>(null);
   /** Style copied by the paint-format button, applied to the next selection. */
   const [painting, setPainting] = useState<WorkbookCell["style"] | null>(null);
@@ -883,8 +894,10 @@ export function BigSheetView({ entry, root, document }: { entry: LibraryEntry; r
     setSaving(true);
     try {
       if (store.inMemory) {
-        await library.saveDocument(entry, await store.toDocument());
+        const saved = await store.toDocument();
+        const { event } = await library.saveDocument(entry, saved);
         store.markSaved();
+        onSaved?.(saved, event);
         toast("Saved.", "success");
         return;
       }
@@ -915,7 +928,15 @@ export function BigSheetView({ entry, root, document }: { entry: LibraryEntry; r
     } finally {
       setSaving(false);
     }
-  }, [entry, library, saving, store, toast]);
+  }, [entry, library, onSaved, saving, store, toast]);
+
+  // A small sheet saves by itself a moment after the last change, like the other editor does.
+  const autosaveSource = store.inMemory && canEdit ? store.dirtyCount : 0;
+  useEffect(() => {
+    if (autosaveSource === 0 || saving || !AUTOSAVE_ENABLED) return;
+    const timer = window.setTimeout(() => void save(), 2500);
+    return () => window.clearTimeout(timer);
+  }, [autosaveSource, saving, save, version]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -1201,7 +1222,7 @@ export function BigSheetView({ entry, root, document }: { entry: LibraryEntry; r
           }}
         />
         <span className="big-sheet-note">
-          {calculating ?? (store.tabs[tab].layout.filter && !selectedCell?.comment ? `Filter on column ${columnName(store.tabs[tab].layout.filter.col)} ${store.tabs[tab].layout.filter.summary} · ${store.tabs[tab].layout.filter.hidden.length.toLocaleString()} rows hidden` : selectedCell?.comment ? `💬 ${selectedCell.comment}` : totals || `${rows.toLocaleString()} rows · large sheet mode${canEdit ? "" : " · read-only"}`)}
+          {calculating ?? (store.tabs[tab].layout.filter && !selectedCell?.comment ? `Filter on column ${columnName(store.tabs[tab].layout.filter.col)} ${store.tabs[tab].layout.filter.summary} · ${store.tabs[tab].layout.filter.hidden.length.toLocaleString()} rows hidden` : selectedCell?.comment ? `💬 ${selectedCell.comment}` : totals || `${rows.toLocaleString()} rows${store.inMemory ? "" : " · large sheet mode"}${canEdit ? "" : " · read-only"}`)}
         </span>
         <button type="button" className="big-sheet-calc" disabled={!!calculating} onClick={() => void downloadXlsx()} title="Download every tab as an .xlsx file">
           Download .xlsx
@@ -1209,7 +1230,7 @@ export function BigSheetView({ entry, root, document }: { entry: LibraryEntry; r
         {canEdit && (
           <button type="button" className="btn btn-primary btn-sm" disabled={saving || store.dirtyCount === 0} onClick={() => void save()}>
             {saving ? <Loader2 size={14} className="spin" /> : <Save size={14} />}
-            {store.dirtyCount ? `Save ${store.dirtyCount} changed chunk${store.dirtyCount === 1 ? "" : "s"}` : "Saved"}
+            {store.dirtyCount ? (store.inMemory ? "Save" : `Save ${store.dirtyCount} changed chunk${store.dirtyCount === 1 ? "" : "s"}`) : "Saved"}
           </button>
         )}
       </div>

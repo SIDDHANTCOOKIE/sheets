@@ -1084,7 +1084,17 @@ export function Editor() {
           </div>
         </div>
       ) : sheetDocument && entry && newGridRequested() ? (
-        <BigSheetView entry={entry} document={sheetDocument} />
+        <BigSheetView
+          entry={entry}
+          document={sheetDocument}
+          onSaved={(saved, event) => {
+            documentRef.current = saved;
+            lastEventAtRef.current = event.created_at * 1000;
+            lastEventIdRef.current = event.id;
+            setLastSavedAt(Date.now());
+            updateSaveState("saved");
+          }}
+        />
       ) : loading || !sheetDocument ? (
         <div className="editor-loading editor-loading-inline">
           <Loader2 size={22} className="spin" />

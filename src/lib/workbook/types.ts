@@ -124,6 +124,10 @@ export interface WorkbookSheet {
   };
   conditionalFormats?: WorkbookConditionalRule[];
   borders?: WorkbookBorder[];
+  /** Zoom of the sheet, 1 = 100%. Kept by the big-sheet grid. */
+  zoom?: number;
+  /** A filter by the values or colours of one column (see v2/bigFilter). Kept by the big-sheet grid. */
+  filter?: { col: number; hidden: number[]; summary: string; [more: string]: unknown };
 }
 
 export interface WorkbookDocument {
