@@ -8,8 +8,8 @@
 //
 // Stored form: every reference becomes `~(tabId:rowId:colId:flags)`; a range is two of them joined by ":".
 // `flags` has bit 1 = column is $absolute, bit 2 = row is $absolute. A whole-column reference has "-" for the
-// row, a whole-row reference "-" for the column. A row or column that has no id yet (past the end of the
-// sheet) is written "@<position>" and stays positional. Everything else in the formula text is untouched.
+// row, a whole-row reference "-" for the column. A row or column past the last one that has an id is written
+// "@<last id>+<k>": k places after that last row or column, so it moves with inserts and deletes before it. Everything else in the formula text is untouched.
 // A reference to the formula's own tab has "_" in place of the tab id, so a copied tab (which shares its stored
 // chunks with the original) reads its own rows, not the original's.
 //
@@ -17,7 +17,7 @@
 // can still resolve: its start moves to the next surviving row or column and its end to the previous one, as
 // in Excel. A single reference to a deleted row or column, or a range with nothing left in it, is #REF!.
 import { columnIndex, columnName, quoteSheet } from "../../../packages/sheets-formula/src/refs";
-import { rowIdAt, type RowRun } from "../workbook/ids";
+import type { RowRun } from "../workbook/ids";
 
 /** What is left behind by a deleted id: the surviving ids on each side of it when it was deleted. */
 export type Tombstone = [prev: string | null, next: string | null];
@@ -71,34 +71,54 @@ export class ArrayAxis implements Axis {
 
 /** An axis held as runs of ids (rows of a big sheet), so a million rows are a handful of entries. */
 export class RunAxis implements Axis {
-  private byTag?: Map<string, { start: number; end: number; at: number }[]>;
+  private cachedFor?: readonly RowRun[];
+  private byTag = new Map<string, { start: number; end: number; at: number }[]>();
+  private starts: number[] = [];
+  private total = 0;
   constructor(
     public runs: readonly RowRun[],
     public tombstones: Tombstones = {},
   ) {}
+  /** Builds the lookups; redone whenever `runs` was replaced. */
+  private build(): void {
+    if (this.cachedFor === this.runs) return;
+    this.cachedFor = this.runs;
+    this.byTag = new Map();
+    this.starts = [];
+    let at = 0;
+    for (const [tag, start, length] of this.runs) {
+      const list = this.byTag.get(tag) ?? [];
+      list.push({ start, end: start + length, at });
+      this.byTag.set(tag, list);
+      this.starts.push(at);
+      at += length;
+    }
+    this.total = at;
+  }
   get length(): number {
-    let total = 0;
-    for (const run of this.runs) total += run[2];
-    return total;
+    this.build();
+    return this.total;
   }
   idAt(index: number): string | undefined {
-    return rowIdAt(this.runs, index);
+    this.build();
+    if (!Number.isInteger(index) || index < 0 || index >= this.total) return undefined;
+    // the last run that starts at or before `index`
+    let lo = 0;
+    let hi = this.starts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (this.starts[mid] <= index) lo = mid;
+      else hi = mid - 1;
+    }
+    const [tag, start] = this.runs[lo];
+    return `${tag}.${start + (index - this.starts[lo])}`;
   }
   indexOf(id: string): number {
-    if (!this.byTag) {
-      this.byTag = new Map();
-      let at = 0;
-      for (const [tag, start, length] of this.runs) {
-        const list = this.byTag.get(tag) ?? [];
-        list.push({ start, end: start + length, at });
-        this.byTag.set(tag, list);
-        at += length;
-      }
-    }
-    const dot = id.lastIndexOf(".");
-    if (dot < 0) return -1;
-    const n = Number(id.slice(dot + 1));
-    for (const run of this.byTag.get(id.slice(0, dot)) ?? []) if (n >= run.start && n < run.end) return run.at + (n - run.start);
+    this.build();
+    const m = /^(.*)\.(\d+)$/.exec(id);
+    if (!m) return -1;
+    const n = Number(m[2]);
+    for (const run of this.byTag.get(m[1]) ?? []) if (n >= run.start && n < run.end) return run.at + (n - run.start);
     return -1;
   }
   tombstone(id: string): Tombstone | undefined {
@@ -133,7 +153,24 @@ export interface RefContext {
 
 // ---- the text <-> id conversion -----------------------------------------------------------------
 
-const STRING = /("(?:[^"]|"")*")/;
+/**
+ * Splits formula text into parts alternately plain (even places) and untouchable (odd places): text in quotes and,
+ * when `ids` is set, id tokens that are already there. A quoted sheet name stays in the plain text, even when it
+ * contains a double quote.
+ */
+function splitProtected(text: string, ids: boolean): string[] {
+  const out: string[] = [];
+  const re = ids ? /'(?:[^']|'')+'!|"(?:[^"]|"")*"|~\([^()]*\)(?::~\([^()]*\))?/g : /'(?:[^']|'')+'!|"(?:[^"]|"")*"/g;
+  let last = 0;
+  for (const m of text.matchAll(re)) {
+    if (m[0][0] === "'") continue;
+    const at = m.index ?? 0;
+    out.push(text.slice(last, at), m[0]);
+    last = at + m[0].length;
+  }
+  out.push(text.slice(last));
+  return out;
+}
 const A1 =
   /(?<![A-Za-z0-9_.])((?:'(?:[^']|'')+'|[A-Za-z_][A-Za-z0-9_.]*)!)?(\$?[A-Za-z]{1,3}\$?\d+(?::\$?[A-Za-z]{1,3}\$?\d+)?|\$?[A-Za-z]{1,3}:\$?[A-Za-z]{1,3}|\$?\d+:\$?\d+)(?![A-Za-z0-9_(])/g;
 const CELL = /^(\$?)([A-Za-z]{1,3})(\$?)(\d+)$/;
@@ -141,12 +178,25 @@ const COLS = /^(\$?)([A-Za-z]{1,3}):(\$?)([A-Za-z]{1,3})$/;
 const ROWS = /^(\$?)(\d+):(\$?)(\d+)$/;
 const ID = /~\(([^:()]+):([^:()]+):([^:()]+):([0-3])\)(?::~\(([^:()]+):([^:()]+):([^:()]+):([0-3])\))?/g;
 
-const tabNamed = (ctx: RefContext, name: string) => ctx.tabs.find((tab) => tab.name.toLowerCase() === name.toLowerCase());
+/** The tab with this name: the formula's own tab first, then an exact match, then any that differs only in case. */
+const tabNamed = (ctx: RefContext, name: string) => {
+  const lower = name.toLowerCase();
+  const own = ctx.tabs.find((tab) => tab.id === ctx.current);
+  if (own && own.name.toLowerCase() === lower) return own;
+  return ctx.tabs.find((tab) => tab.name === name) ?? ctx.tabs.find((tab) => tab.name.toLowerCase() === lower);
+};
 const tabById = (ctx: RefContext, id: string) => ctx.tabs.find((tab) => tab.id === id);
 
 /** `~(tab:row:col:flags)` for a position; a position without an id yet stays positional ("@5"). */
 function token(tab: TabAxes, self: boolean, row: number | null, col: number | null, colAbs: boolean, rowAbs: boolean): string {
-  const part = (axis: Axis, index: number | null) => (index === null ? "-" : (axis.idAt(index) ?? `@${index}`));
+  const part = (axis: Axis, index: number | null) => {
+    if (index === null) return "-";
+    const id = axis.idAt(index);
+    if (id !== undefined) return id;
+    // past the last row or column that has an id: counted from that one
+    const last = axis.length - 1;
+    return last < 0 ? `@${index}` : `@${axis.idAt(last)}+${index - last}`;
+  };
   return `~(${self ? SELF : tab.id}:${part(tab.rows, row)}:${part(tab.cols, col)}:${(colAbs ? 1 : 0) | (rowAbs ? 2 : 0)})`;
 }
 
@@ -165,23 +215,28 @@ function refToIds(tab: TabAxes, self: boolean, text: string): string | null {
     const c = cell(text);
     return c && c.row >= 0 ? token(tab, self, c.row, c.col, c.colAbs, c.rowAbs) : null;
   }
+  // A range typed backwards (B5:B2) means the same as the right way round: the corners are put in order, each keeping its $.
   const colsMatch = COLS.exec(text);
   if (colsMatch) {
-    const a = columnIndex(colsMatch[2]);
-    const b = columnIndex(colsMatch[4]);
-    return `${token(tab, self, null, a, colsMatch[1] === "$", false)}:${token(tab, self, null, b, colsMatch[3] === "$", false)}`;
+    const a = { index: columnIndex(colsMatch[2]), abs: colsMatch[1] === "$" };
+    const b = { index: columnIndex(colsMatch[4]), abs: colsMatch[3] === "$" };
+    const [lo, hi] = a.index <= b.index ? [a, b] : [b, a];
+    return `${token(tab, self, null, lo.index, lo.abs, false)}:${token(tab, self, null, hi.index, hi.abs, false)}`;
   }
   const rowsMatch = ROWS.exec(text);
   if (rowsMatch) {
-    const a = Number(rowsMatch[2]) - 1;
-    const b = Number(rowsMatch[4]) - 1;
-    if (a < 0 || b < 0) return null;
-    return `${token(tab, self, a, null, false, rowsMatch[1] === "$")}:${token(tab, self, b, null, false, rowsMatch[3] === "$")}`;
+    const a = { index: Number(rowsMatch[2]) - 1, abs: rowsMatch[1] === "$" };
+    const b = { index: Number(rowsMatch[4]) - 1, abs: rowsMatch[3] === "$" };
+    if (a.index < 0 || b.index < 0) return null;
+    const [lo, hi] = a.index <= b.index ? [a, b] : [b, a];
+    return `${token(tab, self, lo.index, null, false, lo.abs)}:${token(tab, self, hi.index, null, false, hi.abs)}`;
   }
   const a = cell(text.slice(0, colon));
   const b = cell(text.slice(colon + 1));
   if (!a || !b || a.row < 0 || b.row < 0) return null;
-  return `${token(tab, self, a.row, a.col, a.colAbs, a.rowAbs)}:${token(tab, self, b.row, b.col, b.colAbs, b.rowAbs)}`;
+  const [rowLo, rowHi] = a.row <= b.row ? [a, b] : [b, a];
+  const [colLo, colHi] = a.col <= b.col ? [a, b] : [b, a];
+  return `${token(tab, self, rowLo.row, colLo.col, colLo.colAbs, rowLo.rowAbs)}:${token(tab, self, rowHi.row, colHi.col, colHi.colAbs, rowHi.rowAbs)}`;
 }
 
 const unquote = (name: string) => (name.startsWith("'") ? name.slice(1, -1).replace(/''/g, "'") : name);
@@ -190,10 +245,9 @@ const unquote = (name: string) => (name.startsWith("'") ? name.slice(1, -1).repl
 export function formulaToIds(formula: string, ctx: RefContext): string {
   const here = tabById(ctx, ctx.current);
   if (!here) return formula;
-  return formula
-    .split(STRING)
+  return splitProtected(formula, true)
     .map((part, i) => {
-      if (i % 2 === 1) return part; // inside a string
+      if (i % 2 === 1) return part; // inside a string, or an id that is already there
       return part.replace(A1, (whole: string, prefix: string | undefined, ref: string) => {
         const tab = prefix ? tabNamed(ctx, unquote(prefix.slice(0, -1))) : here;
         if (!tab) return whole;
@@ -210,7 +264,14 @@ type Resolved = { kind: "live"; index: number } | { kind: "gone" };
 
 /** Position of an id; a deleted id resolves along its tombstone toward `direction` (1 = next survivor, -1 = previous). */
 function resolve(axis: Axis, id: string, direction: 1 | -1 | 0): Resolved {
-  if (id.startsWith("@")) return { kind: "live", index: Number(id.slice(1)) };
+  if (id.startsWith("@")) {
+    const plus = id.lastIndexOf("+");
+    if (plus < 0) return { kind: "live", index: Number(id.slice(1)) };
+    // "@<last id>+<k>": k places after that row or column (the previous survivor when it was deleted)
+    const anchor = resolve(axis, id.slice(1, plus), -1);
+    const k = Number(id.slice(plus + 1));
+    return { kind: "live", index: anchor.kind === "live" ? anchor.index + k : k - 1 };
+  }
   const seen = new Set<string>();
   let at: string | null = id;
   while (at !== null && !seen.has(at)) {
@@ -220,6 +281,8 @@ function resolve(axis: Axis, id: string, direction: 1 | -1 | 0): Resolved {
     if (direction === 0) return { kind: "gone" };
     const tomb = axis.tombstone(at);
     if (!tomb) return { kind: "gone" };
+    // Nothing survives after a deleted tail: a range that began there now begins at the first place past the end.
+    if (direction === 1 && tomb[1] === null) return { kind: "live", index: axis.length };
     at = direction === 1 ? tomb[1] : tomb[0];
   }
   return { kind: "gone" };
@@ -233,8 +296,7 @@ const REF_ERROR = "#REF!";
  */
 export function formulaFromIds(stored: string, ctx: RefContext): string {
   if (!hasIdRefs(stored)) return stored;
-  return stored
-    .split(STRING)
+  return splitProtected(stored, false)
     .map((part, i) => {
       if (i % 2 === 1) return part;
       return part.replace(ID, (_whole, tabId, row1, col1, flags1, _tab2, row2, col2, flags2) => {

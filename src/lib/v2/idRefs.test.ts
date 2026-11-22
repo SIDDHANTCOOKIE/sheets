@@ -72,12 +72,31 @@ describe("formulas by id: the text conversion", () => {
     expect(formulaFromIds(stored, ctxOf([a], "a"))).toBe("#REF!+A1");
   });
 
-  it("keeps a reference past the end of the sheet positional", () => {
-    const stored = formulaToIds("A500+B2", ctx);
-    expect(stored).toContain("@499");
+  it("a reference past the end of the sheet moves with inserts and deletes before it", () => {
+    const stored = formulaToIds("A500+B2+SUM(C2:C1000)", ctx);
+    expect(stored).toMatch(/~\(_:@[^:]+\+\d+:/);
     rows(a).insert(0, ["new"]);
-    expect(formulaFromIds(stored, ctx)).toBe("A500+B3");
+    expect(formulaFromIds(stored, ctx)).toBe("A501+B3+SUM(C3:C1001)");
     rows(a).remove(0, 1);
+    expect(formulaFromIds(stored, ctx)).toBe("A500+B2+SUM(C2:C1000)");
+    rows(a).remove(3, 2);
+    expect(formulaFromIds(stored, ctx)).toBe("A498+B2+SUM(C2:C998)");
+  });
+
+  it("a range typed backwards is stored the right way round", () => {
+    for (const [typed, shown] of [["SUM(B5:B2)", "SUM(B2:B5)"], ["D4:A1", "A1:D4"], ["$B$5:A$1", "A$1:$B$5"], ["5:2", "2:5"], ["B:A", "A:B"]] as const) {
+      expect(formulaFromIds(formulaToIds(typed, ctx), ctx)).toBe(shown);
+    }
+  });
+
+  it("does not convert twice, and keeps a quoted sheet name that holds a double quote", () => {
+    const once = formulaToIds("A1+B2", ctx);
+    expect(formulaToIds(once, ctx)).toBe(once);
+    const q = tab("q", 'Say "hi"', 20, 8);
+    const quoted = ctxOf([a, q], "a");
+    const stored = formulaToIds("'Say \"hi\"'!B2*2", quoted);
+    expect(stored).toMatch(/^~\(q:/);
+    expect(formulaFromIds(stored, quoted)).toBe("'Say \"hi\"'!B2*2");
   });
 });
 
