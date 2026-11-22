@@ -58,7 +58,7 @@
       "dependents update (any size)": "done",
       "cross-tab references": "done",
       "references follow inserted/deleted rows and columns": "done",
-      "450 FortuneSheet functions": "partial",
+      "450 FortuneSheet functions": "done",
       "formula bar with token colours": "partial",
       "autocomplete and argument help": "done",
       "click/drag to insert references": "partial",
