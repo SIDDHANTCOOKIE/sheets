@@ -99,6 +99,8 @@ export interface GridOptions {
   /** Cells to look at for Ctrl+arrow (does the cell hold anything?). */
   hasData?(row: number, col: number): boolean;
   onResize?(kind: "row" | "col", index: number, size: number): void;
+  /** Ctrl+wheel or Ctrl +/-/0 changed the zoom (1 = 100%). */
+  onZoom?(zoom: number): void;
   /** Right-click: where (page coordinates) and on which row/column or header. The selection has already been adjusted. */
   onContextMenu?(info: { x: number; y: number; row: number; col: number; onRowHead: boolean; onColHead: boolean }): void;
 }
@@ -127,6 +129,8 @@ export class Grid {
   selection: Selection | null = null;
   frozenRows = 0;
   frozenCols = 0;
+  /** 1 = 100%. Everything is laid out in unzoomed px and drawn scaled. */
+  zoom = 1;
   readonly merges = new MergeIndex();
   private borders: readonly Border[] = [];
 
@@ -181,6 +185,7 @@ export class Grid {
     this.scroller.addEventListener("pointerup", this.onPointerUp);
     this.scroller.addEventListener("dblclick", this.onDoubleClick);
     this.scroller.addEventListener("contextmenu", this.onContextMenu);
+    this.scroller.addEventListener("wheel", this.onWheel, { passive: false });
     this.root.addEventListener("keydown", this.onKeyDown);
     // Firefox sends clipboard events to the page, not to the focused element, so listen on the document.
     document.addEventListener("copy", this.onCopy);
@@ -257,8 +262,8 @@ export class Grid {
       const y = this.rows.offset(cell.row) - v.fh;
       const top = v.rowTop - v.fh;
       const size = this.rows.size(cell.row);
-      if (y < top) this.scroller.scrollTop = toScrollPx(y, total, win);
-      else if (y + size > top + win) this.scroller.scrollTop = toScrollPx(y + size - win, total, win);
+      if (y < top) this.scroller.scrollTop = toScrollPx(y, total, win) * this.zoom;
+      else if (y + size > top + win) this.scroller.scrollTop = toScrollPx(y + size - win, total, win) * this.zoom;
     }
     if (cell.col >= v.fc) {
       const win = Math.max(1, v.viewW - v.fw);
@@ -266,8 +271,8 @@ export class Grid {
       const x = this.cols.offset(cell.col) - v.fw;
       const left = v.left - v.fw;
       const size = this.cols.size(cell.col);
-      if (x < left) this.scroller.scrollLeft = toScrollPx(x, total, win);
-      else if (x + size > left + win) this.scroller.scrollLeft = toScrollPx(x + size - win, total, win);
+      if (x < left) this.scroller.scrollLeft = toScrollPx(x, total, win) * this.zoom;
+      else if (x + size > left + win) this.scroller.scrollLeft = toScrollPx(x + size - win, total, win) * this.zoom;
     }
   }
 
@@ -277,19 +282,35 @@ export class Grid {
     const block = this.merges.at(cell.row, cell.col);
     const row = block?.r ?? cell.row;
     const col = block?.c ?? cell.col;
-    return {
+    const z = this.zoom;
+    const rect = {
       x: this.headW + (col < v.fc ? this.cols.offset(col) : v.fw + this.cols.offset(col) - v.left),
       y: this.headH + (row < v.fr ? this.rows.offset(row) : v.fh + this.rows.offset(row) - v.rowTop),
       width: block ? this.cols.offset(block.c + block.cs) - this.cols.offset(block.c) : this.cols.size(col),
       height: block ? this.rows.offset(block.r + block.rs) - this.rows.offset(block.r) : this.rows.size(row),
     };
+    return { x: rect.x * z, y: rect.y * z, width: rect.width * z, height: rect.height * z };
   }
 
   scrollToRow(row: number): void {
     const target = Math.max(0, Math.min(this.rows.length - 1, row));
     const v = this.view();
-    this.scroller.scrollTop = toScrollPx(Math.max(0, this.rows.offset(target) - v.fh), this.rows.total - v.fh, Math.max(1, v.viewH - v.fh));
+    this.scroller.scrollTop = toScrollPx(Math.max(0, this.rows.offset(target) - v.fh), this.rows.total - v.fh, Math.max(1, v.viewH - v.fh)) * this.zoom;
     this.schedule();
+  }
+
+  /** Zooms the sheet (0.25 to 2). Keeps the top-left of what is shown in place. */
+  setZoom(zoom: number, notify = false): void {
+    const next = Math.round(Math.min(2, Math.max(0.25, zoom)) * 100) / 100;
+    if (next === this.zoom) return;
+    const top = this.scroller.scrollTop / this.zoom;
+    const left = this.scroller.scrollLeft / this.zoom;
+    this.zoom = next;
+    this.resize();
+    this.scroller.scrollTop = top * next;
+    this.scroller.scrollLeft = left * next;
+    this.schedule();
+    if (notify) this.options.onZoom?.(next);
   }
 
   /** Keeps the first `rows` rows and `cols` columns on screen while the rest scrolls. */
@@ -323,14 +344,17 @@ export class Grid {
 
   private resize(): void {
     // The canvas covers what the scroll area shows without its scrollbars.
-    this.width = Math.max(1, this.scroller.clientWidth);
-    this.height = Math.max(1, this.scroller.clientHeight);
+    const screenW = Math.max(1, this.scroller.clientWidth);
+    const screenH = Math.max(1, this.scroller.clientHeight);
+    // Layout is in unzoomed px: the same screen shows more (or less) of the sheet.
+    this.width = screenW / this.zoom;
+    this.height = screenH / this.zoom;
     const dpr = window.devicePixelRatio || 1;
-    this.canvas.width = Math.floor(this.width * dpr);
-    this.canvas.height = Math.floor(this.height * dpr);
-    this.canvas.style.width = `${this.width}px`;
-    this.canvas.style.height = `${this.height}px`;
-    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.canvas.width = Math.floor(screenW * dpr);
+    this.canvas.height = Math.floor(screenH * dpr);
+    this.canvas.style.width = `${screenW}px`;
+    this.canvas.style.height = `${screenH}px`;
+    this.ctx.setTransform(dpr * this.zoom, 0, 0, dpr * this.zoom, 0, 0);
     this.updateSpacer();
     this.schedule();
   }
@@ -361,8 +385,8 @@ export class Grid {
     const viewW = this.width - this.headW;
     const viewH = this.height - this.headH;
     const { fh, fw } = this.frozenPx();
-    this.spacer.style.height = `${scrollExtent(this.rows.total - fh, Math.max(1, viewH - fh)) + this.headH + fh}px`;
-    this.spacer.style.width = `${scrollExtent(this.cols.total - fw, Math.max(1, viewW - fw)) + this.headW + fw}px`;
+    this.spacer.style.height = `${(scrollExtent(this.rows.total - fh, Math.max(1, viewH - fh)) + this.headH + fh) * this.zoom}px`;
+    this.spacer.style.width = `${(scrollExtent(this.cols.total - fw, Math.max(1, viewW - fw)) + this.headW + fw) * this.zoom}px`;
   }
 
   private view() {
@@ -372,8 +396,8 @@ export class Grid {
     const winH = Math.max(1, viewH - fh);
     const winW = Math.max(1, viewW - fw);
     /** Sheet position shown just below the frozen rows / right of the frozen columns. */
-    const rowTop = fh + toSheetPx(this.scroller.scrollTop, this.rows.total - fh, winH);
-    const left = fw + toSheetPx(this.scroller.scrollLeft, this.cols.total - fw, winW);
+    const rowTop = fh + toSheetPx(this.scroller.scrollTop / this.zoom, this.rows.total - fh, winH);
+    const left = fw + toSheetPx(this.scroller.scrollLeft / this.zoom, this.cols.total - fw, winW);
     const rows = visible(this.rows, rowTop, winH);
     const cols = visible(this.cols, left, winW);
     if (rows.first < fr) Object.assign(rows, { first: fr, shift: 0 });
@@ -671,8 +695,8 @@ export class Grid {
   /** Row/column under a point (in the grid's own coordinates), or the header zone it is in. */
   private hit(clientX: number, clientY: number) {
     const rect = this.root.getBoundingClientRect();
-    const px = clientX - rect.left;
-    const py = clientY - rect.top;
+    const px = (clientX - rect.left) / this.zoom;
+    const py = (clientY - rect.top) / this.zoom;
     const v = this.view();
     const relY = Math.max(0, py - this.headH);
     const relX = Math.max(0, px - this.headW);
@@ -743,7 +767,7 @@ export class Grid {
     }
     const bounds = { rows: this.rows, cols: this.cols };
     if (drag.kind === "resize") {
-      const delta = (drag.axis === "col" ? event.clientX : event.clientY) - drag.start;
+      const delta = ((drag.axis === "col" ? event.clientX : event.clientY) - drag.start) / this.zoom;
       const size = Math.max(MIN_SIZE, Math.round(drag.size + delta));
       (drag.axis === "col" ? this.cols : this.rows).set(drag.index, size);
       this.updateSpacer();
@@ -765,6 +789,12 @@ export class Grid {
       const size = drag.axis === "col" ? this.cols.size(drag.index) : this.rows.size(drag.index);
       this.options.onResize?.(drag.axis === "col" ? "col" : "row", drag.index, size);
     }
+  };
+
+  private onWheel = (event: WheelEvent): void => {
+    if (!event.ctrlKey && !event.metaKey) return;
+    event.preventDefault();
+    this.setZoom(this.zoom * (event.deltaY < 0 ? 1.1 : 1 / 1.1), true);
   };
 
   private onContextMenu = (event: MouseEvent): void => {
@@ -803,6 +833,11 @@ export class Grid {
     const mod = event.ctrlKey || event.metaKey;
     const bounds = { rows: this.rows, cols: this.cols };
     const arrows: Record<string, Direction> = { ArrowUp: "up", ArrowDown: "down", ArrowLeft: "left", ArrowRight: "right" };
+    if (mod && (event.key === "+" || event.key === "=" || event.key === "-" || event.key === "0")) {
+      event.preventDefault();
+      this.setZoom(event.key === "0" ? 1 : this.zoom * (event.key === "-" ? 1 / 1.1 : 1.1), true);
+      return;
+    }
     if (mod && event.key.toLowerCase() === "a") {
       event.preventDefault();
       this.select(selectAll(bounds), false);

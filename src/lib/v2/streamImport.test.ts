@@ -215,13 +215,13 @@ describe("importXlsxToBlossom", () => {
     });
     const store = new BigSheetStore(root, servers, env);
     await store.open();
-    await store.setLayout(1, { columnWidths: { 2: 220 }, rowHeights: { 5: 60 }, hiddenRows: [7], frozen: { rows: 1, columns: 2 }, merges: [{ r: 3, c: 1, rs: 2, cs: 2 }], borders: [{ r1: 0, c1: 0, r2: 1, c2: 1, type: "all", color: "#ff0000" }] });
+    await store.setLayout(1, { columnWidths: { 2: 220 }, rowHeights: { 5: 60 }, hiddenRows: [7], frozen: { rows: 1, columns: 2 }, zoom: 1.5, merges: [{ r: 3, c: 1, rs: 2, cs: 2 }], borders: [{ r1: 0, c1: 0, r2: 1, c2: 1, type: "all", color: "#ff0000" }] });
     expect(store.dirtyCount).toBe(1);
 
     const next = await store.save({ servers, signer, ...env });
     const again = new BigSheetStore(next, servers, env);
     await again.open();
-    expect(again.tabs[1].layout).toEqual({ columnWidths: { 2: 220 }, rowHeights: { 5: 60 }, hiddenRows: [7], frozen: { rows: 1, columns: 2 }, merges: [{ r: 3, c: 1, rs: 2, cs: 2 }], borders: [{ r1: 0, c1: 0, r2: 1, c2: 1, type: "all", color: "#ff0000" }] });
+    expect(again.tabs[1].layout).toEqual({ columnWidths: { 2: 220 }, rowHeights: { 5: 60 }, hiddenRows: [7], frozen: { rows: 1, columns: 2 }, zoom: 1.5, merges: [{ r: 3, c: 1, rs: 2, cs: 2 }], borders: [{ r1: 0, c1: 0, r2: 1, c2: 1, type: "all", color: "#ff0000" }] });
     expect(again.tabs[0].layout).toEqual({});
 
     // Unfreezing removes the setting.

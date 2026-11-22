@@ -61,6 +61,7 @@ export function editLayout(layout: TabLayout, edit: StructEdit): TabLayout {
   if (hiddenRows?.length) out.hiddenRows = hiddenRows;
   if (hiddenColumns?.length) out.hiddenColumns = hiddenColumns;
   if (layout.frozen) out.frozen = layout.frozen;
+  if (layout.zoom) out.zoom = layout.zoom;
 
   const merges = (layout.merges ?? []).flatMap((m) => {
     const span = row ? moveSpan(m.r, m.r + m.rs - 1, edit) : moveSpan(m.c, m.c + m.cs - 1, edit);

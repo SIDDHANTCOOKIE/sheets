@@ -54,11 +54,13 @@ export interface TabLayout {
   hiddenRows?: number[];
   hiddenColumns?: number[];
   frozen?: { rows: number; columns: number };
+  /** 1 = 100%. */
+  zoom?: number;
   merges?: { r: number; c: number; rs: number; cs: number }[];
   borders?: { r1: number; c1: number; r2: number; c2: number; type: "all" | "outside" | "inside" | "top" | "bottom" | "left" | "right" | "none"; color?: string; style?: string }[];
 }
 
-const LAYOUT_KEYS = ["columnWidths", "rowHeights", "hiddenRows", "hiddenColumns", "frozen", "merges", "borders"] as const;
+const LAYOUT_KEYS = ["columnWidths", "rowHeights", "hiddenRows", "hiddenColumns", "frozen", "zoom", "merges", "borders"] as const;
 
 export interface BigTab {
   layout: TabLayout;

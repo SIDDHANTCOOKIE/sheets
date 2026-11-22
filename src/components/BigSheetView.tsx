@@ -66,6 +66,7 @@ function applyLayout(grid: Grid, store: BigSheetStore, tab: number): void {
   grid.setSizes("col", overrides(layout.columnWidths, layout.hiddenColumns));
   grid.setSizes("row", overrides(layout.rowHeights, layout.hiddenRows));
   grid.setFrozen(layout.frozen?.rows ?? 0, layout.frozen?.columns ?? 0);
+  grid.setZoom(layout.zoom ?? 1);
   grid.setMerges(layout.merges ?? []);
   grid.setBorders(layout.borders ?? []);
 }
@@ -239,6 +240,11 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
         setEditing({ row: cell.row, col: cell.col, text: initial });
       },
       onClear: (next) => clearArea(next.ranges[next.ranges.length - 1]),
+      onZoom: (zoom) => {
+        // Zoom is a view setting: it is remembered with the sheet when it can be edited.
+        setVersion((n) => n + 1);
+        if (live.current.canEdit) store.setLayout(live.current.tab, { zoom: zoom === 1 ? undefined : zoom }).catch(() => {});
+      },
       onContextMenu: (info) => setMenu({ x: info.x, y: info.y }),
       onResize: (kind, index, size) => {
         // Resizing in a read-only sheet only lasts until the page is closed.
@@ -678,6 +684,7 @@ export function BigSheetView({ entry, root }: { entry: LibraryEntry; root: Sheet
           )
         }
         onStyle={applyStyle}
+        zoom={{ value: gridRef.current?.zoom ?? 1, set: (z) => gridRef.current?.setZoom(z, true) }}
         onBorder={border}
         onMerge={(how) => void merge(how)}
         canSplit={mergedHere}

@@ -94,6 +94,7 @@ export function BigSheetToolbar({
   onClear,
   onStyle,
   freeze,
+  zoom,
   onBorder,
   onMerge,
   canSplit,
@@ -113,6 +114,8 @@ export function BigSheetToolbar({
   onStyle: (patch: StylePatch) => void;
   /** Frozen panes: how many rows/columns are frozen now, the choices, and how to apply one. */
   freeze: { rows: number; columns: number; options: { label: string; rows: number; columns: number }[]; apply: (rows: number, columns: number) => void };
+  /** Zoom as a fraction (1 = 100%) and how to change it. */
+  zoom: { value: number; set: (zoom: number) => void };
   /** Puts a border on the selection. */
   onBorder: (type: "all" | "outside" | "inside" | "top" | "bottom" | "left" | "right" | "none", color: string, style: string) => void;
   onMerge: (how: "all" | "rows" | "columns" | "split") => void;
@@ -224,6 +227,16 @@ export function BigSheetToolbar({
           value={style.background ?? "#ffffff"}
           onChange={(event) => onStyle({ background: event.target.value })}
         />
+      </label>
+      <label className="big-tool is-select" title="Zoom (Ctrl + wheel)">
+        <select className="big-tool-select" value={String(zoom.value)} onChange={(event) => zoom.set(Number(event.target.value))}>
+          {[0.5, 0.75, 0.9, 1, 1.25, 1.5, 2].map((z) => (
+            <option key={z} value={String(z)}>
+              {Math.round(z * 100)}%
+            </option>
+          ))}
+          {![0.5, 0.75, 0.9, 1, 1.25, 1.5, 2].includes(zoom.value) && <option value={String(zoom.value)}>{Math.round(zoom.value * 100)}%</option>}
+        </select>
       </label>
       <label className={cx("big-tool is-select", off && "is-disabled")} title="Borders">
         <Grid2x2 size={16} />
