@@ -3,7 +3,7 @@
 // typed value or formula. The id-based store (with chunks that are NOT in memory, reopen from the saved root, several saves)
 // must end up with exactly the same formulas and plain values.
 import { describe, expect, it } from "vitest";
-import { DEFAULT_MIX, GenState, apply, dump, generate, openSide, rng, saveSide, setup, world, describeOp, type Mix, type Op } from "./advFuzzHarness";
+import { DEFAULT_MIX, type GenState, apply, dump, generate, openSide, rng, saveSide, setup, world, describeOp, type Mix, type Op } from "./advFuzzHarness";
 import { moveIndex } from "./layoutEdit";
 
 interface MCell {

@@ -133,7 +133,6 @@ export type Op =
 export const describeOp = (op: Op): string => JSON.stringify(op);
 
 class Skip extends Error {}
-const pinFirst = new Set<number>(); // placeholder: always pin
 
 const area = (op: { r1: number; c1: number; r2: number; c2: number }): Area => ({ r1: op.r1, c1: op.c1, r2: op.r2, c2: op.c2 });
 
@@ -470,7 +469,6 @@ export function generate(rand: () => number, store: BigSheetStore, ref: Side, st
   };
   const anchors = anchorsFor(store, tab);
   const nearAnchor = () => Math.max(0, Math.min(info.rows - 1, anchors[int(0, anchors.length - 1)] + int(-6, 12)));
-  const dataCol = () => int(0, 7);
   const anyCol = () => (rand() < 0.7 ? int(0, 7) : int(8, 16));
   const colName = (c: number) => String.fromCharCode(65 + (c % 26)); // columns up to Z are enough here
   const cellRef = (t: number) => {
